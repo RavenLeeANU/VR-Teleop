@@ -1,0 +1,19 @@
+<mujoco>
+  <actuator>
+    <position class="joint1" name="left/joint1" joint="left/joint1"/>
+    <position class="joint2" name="left/joint2" joint="left/joint2"/>
+    <position class="joint3" name="left/joint3" joint="left/joint3"/>
+    <position class="joint4" name="left/joint4" joint="left/joint4"/>
+    <position class="joint5" name="left/joint5" joint="left/joint5"/>
+    <position class="joint6" name="left/joint6" joint="left/joint6"/>
+    <position class="finger" name="left/gripper" joint="left/left_finger"/>
+
+    <position class="joint1" name="right/joint1" joint="right/joint1"/>
+    <position class="joint2" name="right/joint2" joint="right/joint2"/>
+    <position class="joint3" name="right/joint3" joint="right/joint3"/>
+    <position class="joint4" name="right/joint4" joint="right/joint4"/>
+    <position class="joint5" name="right/joint5" joint="right/joint5"/>
+    <position class="joint6" name="right/joint6" joint="right/joint6"/>
+    <position class="finger" name="right/gripper" joint="right/left_finger"/>
+  </actuator>
+</mujoco>
