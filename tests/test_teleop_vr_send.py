@@ -102,7 +102,7 @@ def test_trajectory_smoother_disabled_passes_through_without_state_lag() -> None
     assert target.limited is False
 
 
-def test_trajectory_smoother_does_not_filter_gripper() -> None:
+def test_trajectory_smoother_clips_gripper_without_filtering() -> None:
     smoother = TrajectorySmoother(
         _config(enabled=False, gripper_min=0.0, gripper_max=0.08)
     )
@@ -110,10 +110,12 @@ def test_trajectory_smoother_does_not_filter_gripper() -> None:
     high = smoother.process(np.zeros(6), 0.20)
     low = smoother.process(np.zeros(6), -0.05)
 
-    assert math.isclose(high.gripper_pos, 0.20)
-    assert math.isclose(low.gripper_pos, -0.05)
-    assert high.command_limited is False
-    assert low.command_limited is False
+    assert math.isclose(high.gripper_pos, 0.08)
+    assert math.isclose(low.gripper_pos, 0.0)
+    assert high.command_limited is True
+    assert low.command_limited is True
+    assert high.limited is True
+    assert low.limited is True
 
 
 def test_trajectory_smoother_limits_large_position_orientation_and_gripper_jumps() -> None:
@@ -244,7 +246,7 @@ def test_trajectory_smoother_limits_jerk() -> None:
     assert target.jerk_limited is True
 
 
-def test_trajectory_smoother_applies_software_limits_to_pose_only() -> None:
+def test_trajectory_smoother_applies_software_limits_to_pose_and_gripper() -> None:
     smoother = TrajectorySmoother(
         _config(
             pose_min=np.array([-0.5, -0.5, -0.5, -0.2, -0.2, -0.2]),
@@ -257,7 +259,8 @@ def test_trajectory_smoother_applies_software_limits_to_pose_only() -> None:
     target = smoother.process(np.array([2.0, 0.0, -2.0, 1.0, 0.0, -1.0]), 0.2)
 
     assert np.allclose(target.pose_6d, [0.5, 0.0, -0.5, 0.2, 0.0, -0.2])
-    assert math.isclose(target.gripper_pos, 0.2)
+    assert math.isclose(target.gripper_pos, 0.06)
+    assert target.command_limited is True
     assert target.command_limited is True
     assert target.limited is True
 

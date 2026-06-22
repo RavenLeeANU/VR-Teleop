@@ -405,16 +405,19 @@ class TrajectorySmoother:
         raw_pose, orientation_smoothed = self._smooth_orientation(raw_pose)
         raw_command = _compose_command(raw_pose, raw_gripper)
         if not self._config.enabled:
+            raw_gripper, gripper_limited = self._clip_gripper(raw_gripper)
             limited = (
                 gap_filled
                 or deadband_applied
                 or position_smoothed
                 or orientation_smoothed
+                or gripper_limited
             )
             return SmoothedTarget(
                 raw_pose.copy(),
                 raw_gripper,
                 limited,
+                command_limited=gripper_limited,
                 gap_filled=gap_filled,
                 deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
@@ -534,7 +537,16 @@ class TrajectorySmoother:
             limited[:6] = np.maximum(limited[:6], self._config.pose_min)
         if self._config.pose_max is not None:
             limited[:6] = np.minimum(limited[:6], self._config.pose_max)
+        limited[6], _ = self._clip_gripper(float(limited[6]))
         return limited, bool(np.any(np.abs(limited - command) > 1e-12))
+
+    def _clip_gripper(self, gripper_pos: float) -> tuple[float, bool]:
+        if not math.isfinite(gripper_pos):
+            return gripper_pos, False
+        clipped = max(float(self._config.gripper_min), float(gripper_pos))
+        if self._config.gripper_max is not None:
+            clipped = min(float(self._config.gripper_max), clipped)
+        return clipped, not math.isclose(clipped, gripper_pos)
 
     def _fill_short_gap(
         self,
