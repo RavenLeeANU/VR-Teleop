@@ -12,7 +12,7 @@ from teleop_vr.postprocess import (
     replace_nonfinite_command_values,
 )
 from teleop_vr.recorder import RecorderConfig, TeleopRecorder
-from teleop_vr_send import TargetWindow, TeleopTarget
+from teleop_vr_send import TargetWindow, TeleopTarget, _frame_pose
 
 
 def _config(
@@ -459,6 +459,34 @@ def test_replace_nonfinite_command_values_requires_previous_values() -> None:
         assert "no previous command fallback" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_frame_pose_uses_midpoint_gripper_frame_from_landmarks() -> None:
+    points = [(0.0, 0.0, 0.0) for _ in range(21)]
+    points[1] = (-0.02, 0.04, 0.0)  # ThumbMetacarpal
+    points[4] = (-0.02, 0.08, 0.0)  # ThumbTip
+    points[5] = (0.02, 0.04, 0.0)  # IndexProximal
+    points[8] = (0.02, 0.08, 0.0)  # IndexTip
+    frame = HandFrame(
+        side=HandSide.LEFT,
+        frame_id="left",
+        wrist=WristPose(x=1.0, y=2.0, z=3.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0),
+        landmarks=HandLandmarks(points=tuple(points)),
+        sequence_id=1,
+        recv_ts_ns=1,
+        recv_time_unix_ns=1,
+        source_ts_ns=1,
+        wrist_recv_ts_ns=1,
+        landmarks_recv_ts_ns=1,
+        source_frame_seq=1,
+    )
+
+    pos, rot = _frame_pose(frame, basis="rfu")
+
+    assert np.allclose(pos, [1.0, 3.0, 2.08])
+    assert np.allclose(rot[:, 0], [1.0, 0.0, 0.0])
+    assert np.allclose(rot[:, 1], [0.0, 0.0, 1.0])
+    assert np.allclose(rot[:, 2], [0.0, -1.0, 0.0])
 
 
 def test_target_window_interpolates_between_received_targets() -> None:
