@@ -1,0 +1,37 @@
+postprocess:
+  enabled: false
+  alpha: 0.6
+
+  max_pos_step: 0.01
+  max_ori_step: 0.10
+  max_gripper_step: 0.005
+
+  max_pos_velocity: 0.50
+  max_ori_velocity: 1.50
+  max_gripper_velocity: 0.08
+
+  max_pos_acceleration: 3.0
+  max_ori_acceleration: 8.0
+  max_gripper_acceleration: 0.40
+
+  max_pos_jerk: 300.0
+  max_ori_jerk: 800.0
+  max_gripper_jerk: 40.0
+
+  pose_min: null
+  pose_max: null
+  gripper_min: 0.0
+  gripper_max: null
+
+  # Short NaN/Inf gaps are held at the last valid command before later smoothing.
+  max_missing_frames: 10
+
+  # Online causal Savitzky-Golay smoothing for position channels.
+  sg_position_enabled: false
+  sg_window_size: 21
+  sg_poly_order: 2
+
+  # EMA smoothing on orientation frame X/Y axes, followed by Gram-Schmidt cleanup.
+  orientation_ema_enabled: false
+  orientation_ema_alpha_x: 0.15
+  orientation_ema_alpha_y: 0.15

@@ -17,3 +17,23 @@ IK测试
 ```
 python .\examples\video\x5_ik_test.py --arm right --directions +x,+y,-y
 ```
+
+性能与效果优化
+
+参考文档：https://xcnuqiaojwqi.feishu.cn/wiki/JZnSw2Lc6iwqsLktl42cjLRmnOf
+
+
+网络延迟分析
+```
+python -m teleop_vr.plot_teleop_vr_records --network --raw records\test03_vr_raw.csv
+```
+
+绘制轨迹，对比 raw_target 和 sent_target：
+```
+python -m teleop_vr.plot_teleop_vr_records records\test03_converted.csv --save records\test03_traj.png --no-show
+```
+
+重新计算平滑
+```
+python -m teleop_vr.smooth_trajectory_experiment records\test03_converted.csv --source converted --postprocess-config teleop_vr\postprocess_config.yaml --save records\test03_smooth_exp.png --no-show
+```
