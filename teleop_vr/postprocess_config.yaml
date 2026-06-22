@@ -1,5 +1,5 @@
 postprocess:
-  enabled: false
+  enabled: true
   alpha: 0.6
 
   max_pos_step: 0.01
@@ -27,11 +27,11 @@ postprocess:
   max_missing_frames: 10
 
   # Online causal Savitzky-Golay smoothing for position channels.
-  sg_position_enabled: false
+  sg_position_enabled: true
   sg_window_size: 21
   sg_poly_order: 2
 
   # EMA smoothing on orientation frame X/Y axes, followed by Gram-Schmidt cleanup.
-  orientation_ema_enabled: false
+  orientation_ema_enabled: true
   orientation_ema_alpha_x: 0.15
   orientation_ema_alpha_y: 0.15

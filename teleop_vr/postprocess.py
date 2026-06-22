@@ -380,13 +380,15 @@ class TrajectorySmoother:
         raw_pose, raw_gripper, gap_filled = self._fill_short_gap(raw_pose, raw_gripper)
         raw_pose, position_smoothed = self._smooth_position(raw_pose)
         raw_pose, orientation_smoothed = self._smooth_orientation(raw_pose)
+        raw_gripper, gripper_limited = self._apply_gripper_limits(raw_gripper)
         raw_command = _compose_command(raw_pose, raw_gripper)
         if not self._config.enabled:
-            limited = gap_filled or position_smoothed or orientation_smoothed
+            limited = gap_filled or position_smoothed or orientation_smoothed or gripper_limited
             return SmoothedTarget(
                 raw_pose.copy(),
                 raw_gripper,
                 limited,
+                command_limited=gripper_limited,
                 gap_filled=gap_filled,
                 position_smoothed=position_smoothed,
                 orientation_smoothed=orientation_smoothed,
@@ -495,10 +497,14 @@ class TrajectorySmoother:
             limited[:6] = np.maximum(limited[:6], self._config.pose_min)
         if self._config.pose_max is not None:
             limited[:6] = np.minimum(limited[:6], self._config.pose_max)
-        limited[6] = max(limited[6], self._config.gripper_min)
-        if self._config.gripper_max is not None:
-            limited[6] = min(limited[6], self._config.gripper_max)
+        limited[6], _ = self._apply_gripper_limits(float(limited[6]))
         return limited, bool(np.any(np.abs(limited - command) > 1e-12))
+
+    def _apply_gripper_limits(self, gripper_pos: float) -> tuple[float, bool]:
+        limited = max(float(gripper_pos), self._config.gripper_min)
+        if self._config.gripper_max is not None:
+            limited = min(limited, self._config.gripper_max)
+        return limited, abs(limited - float(gripper_pos)) > 1e-12
 
     def _fill_short_gap(
         self,

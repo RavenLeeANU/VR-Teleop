@@ -168,6 +168,8 @@ class _LineReceiver(Protocol):
 
     def iter_lines(self) -> Iterator[str]: ...
 
+    def close(self) -> None: ...
+
 
 StreamEvent = ParsedPacket | HandFrame | HeadFrame
 """Public event type emitted by :class:`HTSClient` streaming methods."""
@@ -196,6 +198,12 @@ class HTSClient:
             include_head_frames=config.output in (StreamOutput.FRAMES, StreamOutput.BOTH),
         )
         self._stats = ClientStats()
+        self._receiver: _LineReceiver | None = None
+
+    def close(self) -> None:
+        """Close the active transport receiver, if the stream is running."""
+        if self._receiver is not None:
+            self._receiver.close()
 
     def iter_events(self) -> Iterator[StreamEvent]:
         """Iterate streaming events from configured transport.
@@ -206,7 +214,9 @@ class HTSClient:
             When ``error_policy=strict`` and an incoming line cannot be parsed.
         """
         receiver = self._make_receiver()
-        with receiver:
+        self._receiver = receiver
+        try:
+            receiver.__enter__()
             for line in receiver.iter_lines():
                 self._stats = self._stats_with(lines_received=self._stats.lines_received + 1)
                 self._emit_log(
@@ -260,6 +270,12 @@ class HTSClient:
                             )
                         )
                         yield frame
+        finally:
+            try:
+                receiver.close()
+            finally:
+                if self._receiver is receiver:
+                    self._receiver = None
 
     def run(
         self,

@@ -96,6 +96,20 @@ def test_trajectory_smoother_disabled_passes_through_without_state_lag() -> None
     assert target.limited is False
 
 
+def test_trajectory_smoother_clips_gripper_even_when_disabled() -> None:
+    smoother = TrajectorySmoother(
+        _config(enabled=False, gripper_min=0.0, gripper_max=0.08)
+    )
+
+    high = smoother.process(np.zeros(6), 0.20)
+    low = smoother.process(np.zeros(6), -0.05)
+
+    assert math.isclose(high.gripper_pos, 0.08)
+    assert math.isclose(low.gripper_pos, 0.0)
+    assert high.command_limited is True
+    assert low.command_limited is True
+
+
 def test_trajectory_smoother_limits_large_position_orientation_and_gripper_jumps() -> None:
     smoother = TrajectorySmoother(
         _config(

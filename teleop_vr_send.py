@@ -13,7 +13,10 @@ import numpy as np
 
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(ROOT_DIR)
+SRC_DIR = os.path.join(ROOT_DIR, "src")
+for path in (SRC_DIR, ROOT_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 os.chdir(ROOT_DIR)
 
 try:
@@ -383,6 +386,8 @@ def start_vr_teleop(
     home_pose = np.asarray(controller.get_home_pose(), dtype=float).copy()
     target_window = TargetWindow(interp_window_size)
     stop_event = threading.Event()
+    client_lock = threading.Lock()
+    active_client: HTSClient | None = None
     ignored_other_hand_count = 0
     start_time = time.monotonic()
 
@@ -428,7 +433,7 @@ def start_vr_teleop(
     print("Waiting for the first matching VR hand frame as reference pose.")
 
     def receive_loop() -> None:
-        nonlocal ignored_other_hand_count
+        nonlocal active_client, ignored_other_hand_count
         reference: VrReference | None = None
         last_raw_rpy: np.ndarray | None = None
         # 接收线程只负责读取 HTS 帧、转换到机器人目标位姿，并写入滑动窗口。
@@ -442,6 +447,8 @@ def start_vr_teleop(
                 error_policy=ErrorPolicy.TOLERANT,
             )
         )
+        with client_lock:
+            active_client = client
 
         try:
             for event in client.iter_events():
@@ -530,8 +537,14 @@ def start_vr_teleop(
                     )
                 target_window.append(target)
         except Exception as exc:
-            stop_event.set()
-            print(f"[vr-teleop] receive thread stopped by error: {exc!r}")
+            if not stop_event.is_set():
+                stop_event.set()
+                print(f"[vr-teleop] receive thread stopped by error: {exc!r}")
+        finally:
+            client.close()
+            with client_lock:
+                if active_client is client:
+                    active_client = None
 
     def send_loop() -> None:
         eef_cmd = EEFState()
@@ -700,6 +713,10 @@ def start_vr_teleop(
             time.sleep(0.1)
     finally:
         stop_event.set()
+        with client_lock:
+            client = active_client
+        if client is not None:
+            client.close()
         receiver.join(timeout=1.0)
         sender.join(timeout=1.0)
 
@@ -725,7 +742,12 @@ def start_vr_teleop(
 @click.option("--preview-time", type=float, default=0.05, show_default=True)
 @click.option("--single-cmd", is_flag=True, help="Use set_eef_cmd instead of set_eef_traj.")
 @click.option("--log-interval", type=int, default=10, show_default=True)
-@click.option("--record", is_flag=True, help="Record VR raw and converted data to CSV on Ctrl+C.")
+@click.option(
+    "--record/--no-record",
+    default=True,
+    show_default=True,
+    help="Record VR raw and converted data to CSV on Ctrl+C.",
+)
 @click.option("--record-dir", default="./records", show_default=True)
 @click.option("--record-prefix", default=None)
 @click.option("--grip-open-dist", type=float, default=0.08, show_default=True)
