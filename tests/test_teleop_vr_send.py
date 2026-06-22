@@ -461,7 +461,7 @@ def test_replace_nonfinite_command_values_requires_previous_values() -> None:
         raise AssertionError("expected ValueError")
 
 
-def test_frame_pose_uses_midpoint_gripper_frame_from_landmarks() -> None:
+def test_frame_pose_uses_wrist_position_and_landmark_gripper_orientation() -> None:
     points = [(0.0, 0.0, 0.0) for _ in range(21)]
     points[1] = (-0.02, 0.04, 0.0)  # ThumbMetacarpal
     points[4] = (-0.02, 0.08, 0.0)  # ThumbTip
@@ -483,7 +483,7 @@ def test_frame_pose_uses_midpoint_gripper_frame_from_landmarks() -> None:
 
     pos, rot = _frame_pose(frame, basis="rfu")
 
-    assert np.allclose(pos, [1.0, 3.0, 2.08])
+    assert np.allclose(pos, [1.0, 3.0, 2.0])
     assert np.allclose(rot[:, 0], [1.0, 0.0, 0.0])
     assert np.allclose(rot[:, 1], [0.0, 0.0, 1.0])
     assert np.allclose(rot[:, 2], [0.0, -1.0, 0.0])

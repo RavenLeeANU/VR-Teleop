@@ -382,7 +382,6 @@ def _midpoint_gripper_pose(
         basis=basis,
     )
 
-    midpoint = (thumb_tip + index_tip) * 0.5
     base_midpoint = (thumb_base + index_base) * 0.5
     x_axis = _safe_normalize(index_base - thumb_base)
     if x_axis is None:
@@ -406,7 +405,7 @@ def _midpoint_gripper_pose(
         rot[:, 0] *= -1.0
         rot[:, 1] *= -1.0
         rot[:, 2] = np.cross(rot[:, 0], rot[:, 1])
-    return midpoint, rot
+    return fallback_pos, rot
 
 
 def _frame_pose(
