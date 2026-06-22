@@ -56,6 +56,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-ori-jerk", type=float, default=None)
     parser.add_argument("--max-gripper-jerk", type=float, default=None)
     parser.add_argument("--max-missing-frames", type=int, default=None)
+    parser.add_argument("--position-deadband", type=float, default=None)
+    parser.add_argument("--orientation-deadband", type=float, default=None)
+    parser.add_argument("--gripper-deadband", type=float, default=None)
     parser.add_argument("--sg-position-enabled", action="store_true")
     parser.add_argument("--no-sg-position", action="store_true")
     parser.add_argument("--sg-window-size", type=int, default=None)
@@ -93,6 +96,9 @@ def _default_enabled_config() -> DampingConfig:
         gripper_min=0.0,
         gripper_max=0.08,
         max_missing_frames=10,
+        position_deadband=0.0015,
+        orientation_deadband=0.01,
+        gripper_deadband=0.001,
         sg_position_enabled=True,
         sg_window_size=21,
         sg_poly_order=2,
@@ -121,6 +127,9 @@ def _override_config(config: DampingConfig, args: argparse.Namespace) -> Damping
         "max_ori_jerk",
         "max_gripper_jerk",
         "max_missing_frames",
+        "position_deadband",
+        "orientation_deadband",
+        "gripper_deadband",
         "sg_window_size",
         "sg_poly_order",
         "orientation_ema_alpha_x",

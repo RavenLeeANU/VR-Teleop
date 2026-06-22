@@ -60,6 +60,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gripper-jerk", type=float, default=40.0)
     parser.add_argument("--gripper-min", type=float, default=0.0)
     parser.add_argument("--gripper-max", type=float, default=None)
+    parser.add_argument("--max-missing-frames", type=int, default=10)
+    parser.add_argument("--position-deadband", type=float, default=0.0)
+    parser.add_argument("--orientation-deadband", type=float, default=0.0)
+    parser.add_argument("--gripper-deadband", type=float, default=0.0)
+    parser.add_argument("--sg-position-enabled", action="store_true")
+    parser.add_argument("--sg-window-size", type=int, default=21)
+    parser.add_argument("--sg-poly-order", type=int, default=2)
+    parser.add_argument("--orientation-ema-enabled", action="store_true")
+    parser.add_argument("--orientation-ema-alpha-x", type=float, default=0.15)
+    parser.add_argument("--orientation-ema-alpha-y", type=float, default=0.15)
     return parser.parse_args()
 
 
@@ -160,6 +170,16 @@ def _build_config(args: argparse.Namespace) -> DampingConfig:
         max_gripper_jerk=args.max_gripper_jerk,
         gripper_min=args.gripper_min,
         gripper_max=args.gripper_max,
+        max_missing_frames=args.max_missing_frames,
+        position_deadband=args.position_deadband,
+        orientation_deadband=args.orientation_deadband,
+        gripper_deadband=args.gripper_deadband,
+        sg_position_enabled=args.sg_position_enabled,
+        sg_window_size=args.sg_window_size,
+        sg_poly_order=args.sg_poly_order,
+        orientation_ema_enabled=args.orientation_ema_enabled,
+        orientation_ema_alpha_x=args.orientation_ema_alpha_x,
+        orientation_ema_alpha_y=args.orientation_ema_alpha_y,
     )
 
 
@@ -180,6 +200,10 @@ def _run_smoother(
         "acceleration_limited": np.zeros(len(pose), dtype=bool),
         "jerk_limited": np.zeros(len(pose), dtype=bool),
         "command_limited": np.zeros(len(pose), dtype=bool),
+        "gap_filled": np.zeros(len(pose), dtype=bool),
+        "deadband_applied": np.zeros(len(pose), dtype=bool),
+        "position_smoothed": np.zeros(len(pose), dtype=bool),
+        "orientation_smoothed": np.zeros(len(pose), dtype=bool),
     }
 
     last_pose: np.ndarray | None = None
@@ -202,6 +226,10 @@ def _run_smoother(
         flags["acceleration_limited"][index] = target.acceleration_limited
         flags["jerk_limited"][index] = target.jerk_limited
         flags["command_limited"][index] = target.command_limited
+        flags["gap_filled"][index] = target.gap_filled
+        flags["deadband_applied"][index] = target.deadband_applied
+        flags["position_smoothed"][index] = target.position_smoothed
+        flags["orientation_smoothed"][index] = target.orientation_smoothed
         last_pose = target.pose_6d
         last_gripper = target.gripper_pos
 
@@ -269,6 +297,10 @@ def _plot_experiment(
         "acceleration_limited",
         "jerk_limited",
         "command_limited",
+        "deadband_applied",
+        "position_smoothed",
+        "orientation_smoothed",
+        "gap_filled",
     ]
     axes[3, 0].set_title("Limiter Flags")
     for offset, name in enumerate(flag_names):
@@ -347,6 +379,35 @@ def _write_output_csv(
             writer.writerow(row)
 
 
+def _finite_stats(values: np.ndarray) -> str:
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return "n/a"
+    return (
+        f"mean={float(np.mean(finite_values)):.6g} "
+        f"p95={float(np.percentile(finite_values, 95)):.6g} "
+        f"max={float(np.max(finite_values)):.6g}"
+    )
+
+
+def _print_summary(
+    raw_pose: np.ndarray,
+    raw_gripper: np.ndarray,
+    smoothed_pose: np.ndarray,
+    smoothed_gripper: np.ndarray,
+    flags: dict[str, np.ndarray],
+) -> None:
+    pos_delta = np.linalg.norm(smoothed_pose[:, :3] - raw_pose[:, :3], axis=1)
+    ori_delta = np.linalg.norm(smoothed_pose[:, 3:6] - raw_pose[:, 3:6], axis=1)
+    gripper_delta = np.abs(smoothed_gripper - raw_gripper)
+    print("smoothing summary:")
+    print(f"  position delta norm: {_finite_stats(pos_delta)}")
+    print(f"  orientation delta norm: {_finite_stats(ori_delta)}")
+    print(f"  gripper delta: {_finite_stats(gripper_delta)}")
+    for name, values in flags.items():
+        print(f"  {name}: {int(values.sum())}")
+
+
 def main() -> int:
     args = _parse_args()
     rows = _read_csv(args.csv_path.expanduser().resolve())
@@ -360,6 +421,7 @@ def main() -> int:
         _build_config(args),
         cmd_dt=args.cmd_dt,
     )
+    _print_summary(raw_pose, raw_gripper, smoothed_pose, smoothed_gripper, flags)
 
     fig = _plot_experiment(
         time_s,

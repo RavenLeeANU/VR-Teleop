@@ -37,6 +37,9 @@ class DampingConfig:
     orientation_ema_enabled: bool = False
     orientation_ema_alpha_x: float = 0.15
     orientation_ema_alpha_y: float = 0.15
+    position_deadband: float = 0.0
+    orientation_deadband: float = 0.0
+    gripper_deadband: float = 0.0
 
 
 def _to_optional_pose_array(value: object, name: str) -> np.ndarray | None:
@@ -88,6 +91,9 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         "orientation_ema_enabled": False,
         "orientation_ema_alpha_x": 0.15,
         "orientation_ema_alpha_y": 0.15,
+        "position_deadband": 0.0,
+        "orientation_deadband": 0.0,
+        "gripper_deadband": 0.0,
     }
     if path is not None:
         data = _read_yaml(Path(path))
@@ -128,6 +134,9 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         orientation_ema_enabled=bool(values["orientation_ema_enabled"]),
         orientation_ema_alpha_x=float(values["orientation_ema_alpha_x"]),
         orientation_ema_alpha_y=float(values["orientation_ema_alpha_y"]),
+        position_deadband=float(values["position_deadband"]),
+        orientation_deadband=float(values["orientation_deadband"]),
+        gripper_deadband=float(values["gripper_deadband"]),
     )
     validate_damping_config(config)
     return config
@@ -173,6 +182,14 @@ def validate_damping_config(config: DampingConfig) -> None:
         raise ValueError("orientation_ema_alpha_x must be in (0, 1]")
     if not 0.0 < config.orientation_ema_alpha_y <= 1.0:
         raise ValueError("orientation_ema_alpha_y must be in (0, 1]")
+    deadband_values = {
+        "position_deadband": config.position_deadband,
+        "orientation_deadband": config.orientation_deadband,
+        "gripper_deadband": config.gripper_deadband,
+    }
+    invalid_deadband = [name for name, value in deadband_values.items() if value < 0.0]
+    if invalid_deadband:
+        raise ValueError(f"Deadband values must be >= 0: {', '.join(invalid_deadband)}")
 
 
 @dataclass
@@ -186,6 +203,7 @@ class SmoothedTarget:
     jerk_limited: bool = False
     command_limited: bool = False
     gap_filled: bool = False
+    deadband_applied: bool = False
     position_smoothed: bool = False
     orientation_smoothed: bool = False
 
@@ -358,6 +376,8 @@ class TrajectorySmoother:
         self._orientation_rpy: np.ndarray | None = None
         self._last_input_pose: np.ndarray | None = None
         self._last_input_gripper: float | None = None
+        self._deadband_pose: np.ndarray | None = None
+        self._deadband_gripper: float | None = None
         self._missing_count = 0
 
     def reset(self) -> None:
@@ -369,6 +389,8 @@ class TrajectorySmoother:
         self._orientation_rpy = None
         self._last_input_pose = None
         self._last_input_gripper = None
+        self._deadband_pose = None
+        self._deadband_gripper = None
         self._missing_count = 0
 
     def process(self, raw_pose_6d: np.ndarray, raw_gripper_pos: float) -> SmoothedTarget:
@@ -378,18 +400,29 @@ class TrajectorySmoother:
 
         raw_gripper = float(raw_gripper_pos)
         raw_pose, raw_gripper, gap_filled = self._fill_short_gap(raw_pose, raw_gripper)
+        raw_pose, raw_gripper, deadband_applied = self._apply_deadband(
+            raw_pose,
+            raw_gripper,
+        )
         raw_pose, position_smoothed = self._smooth_position(raw_pose)
         raw_pose, orientation_smoothed = self._smooth_orientation(raw_pose)
         raw_gripper, gripper_limited = self._apply_gripper_limits(raw_gripper)
         raw_command = _compose_command(raw_pose, raw_gripper)
         if not self._config.enabled:
-            limited = gap_filled or position_smoothed or orientation_smoothed or gripper_limited
+            limited = (
+                gap_filled
+                or deadband_applied
+                or position_smoothed
+                or orientation_smoothed
+                or gripper_limited
+            )
             return SmoothedTarget(
                 raw_pose.copy(),
                 raw_gripper,
                 limited,
                 command_limited=gripper_limited,
                 gap_filled=gap_filled,
+                deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
                 orientation_smoothed=orientation_smoothed,
             )
@@ -407,9 +440,14 @@ class TrajectorySmoother:
             return SmoothedTarget(
                 pose_6d,
                 gripper_pos,
-                command_limited or gap_filled or position_smoothed or orientation_smoothed,
+                command_limited
+                or gap_filled
+                or deadband_applied
+                or position_smoothed
+                or orientation_smoothed,
                 command_limited=command_limited,
                 gap_filled=gap_filled,
+                deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
                 orientation_smoothed=orientation_smoothed,
             )
@@ -474,6 +512,7 @@ class TrajectorySmoother:
             or jerk_limited
             or command_limited
             or gap_filled
+            or deadband_applied
             or position_smoothed
             or orientation_smoothed
         )
@@ -487,6 +526,7 @@ class TrajectorySmoother:
             jerk_limited=jerk_limited,
             command_limited=command_limited,
             gap_filled=gap_filled,
+            deadband_applied=deadband_applied,
             position_smoothed=position_smoothed,
             orientation_smoothed=orientation_smoothed,
         )
@@ -531,6 +571,60 @@ class TrajectorySmoother:
         filled_pose[~pose_finite] = self._last_input_pose[~pose_finite]
         filled_gripper = raw_gripper if gripper_finite else self._last_input_gripper
         return filled_pose, filled_gripper, True
+
+    def _apply_deadband(
+        self,
+        raw_pose: np.ndarray,
+        raw_gripper: float,
+    ) -> tuple[np.ndarray, float, bool]:
+        if (
+            self._config.position_deadband <= 0.0
+            and self._config.orientation_deadband <= 0.0
+            and self._config.gripper_deadband <= 0.0
+        ):
+            return raw_pose, raw_gripper, False
+        if not bool(np.all(np.isfinite(raw_pose))) or not math.isfinite(raw_gripper):
+            return raw_pose, raw_gripper, False
+
+        if self._deadband_pose is None or self._deadband_gripper is None:
+            self._deadband_pose = raw_pose.copy()
+            self._deadband_gripper = raw_gripper
+            return raw_pose, raw_gripper, False
+
+        filtered_pose = raw_pose.copy()
+        filtered_gripper = raw_gripper
+        applied = False
+
+        pos_delta = raw_pose[:3] - self._deadband_pose[:3]
+        if (
+            self._config.position_deadband > 0.0
+            and float(np.linalg.norm(pos_delta)) < self._config.position_deadband
+        ):
+            filtered_pose[:3] = self._deadband_pose[:3]
+            applied = True
+        else:
+            self._deadband_pose[:3] = raw_pose[:3]
+
+        ori_delta = wrap_angle_delta(raw_pose[3:6] - self._deadband_pose[3:6])
+        if (
+            self._config.orientation_deadband > 0.0
+            and float(np.linalg.norm(ori_delta)) < self._config.orientation_deadband
+        ):
+            filtered_pose[3:6] = self._deadband_pose[3:6]
+            applied = True
+        else:
+            self._deadband_pose[3:6] = raw_pose[3:6]
+
+        if (
+            self._config.gripper_deadband > 0.0
+            and abs(raw_gripper - self._deadband_gripper) < self._config.gripper_deadband
+        ):
+            filtered_gripper = self._deadband_gripper
+            applied = True
+        else:
+            self._deadband_gripper = raw_gripper
+
+        return filtered_pose, filtered_gripper, applied
 
     def _smooth_position(self, raw_pose: np.ndarray) -> tuple[np.ndarray, bool]:
         if not self._config.sg_position_enabled:

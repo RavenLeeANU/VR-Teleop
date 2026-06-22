@@ -42,6 +42,9 @@ def _config(
     orientation_ema_enabled: bool = False,
     orientation_ema_alpha_x: float = 0.15,
     orientation_ema_alpha_y: float = 0.15,
+    position_deadband: float = 0.0,
+    orientation_deadband: float = 0.0,
+    gripper_deadband: float = 0.0,
 ) -> DampingConfig:
     return DampingConfig(
         enabled=enabled,
@@ -69,6 +72,9 @@ def _config(
         orientation_ema_enabled=orientation_ema_enabled,
         orientation_ema_alpha_x=orientation_ema_alpha_x,
         orientation_ema_alpha_y=orientation_ema_alpha_y,
+        position_deadband=position_deadband,
+        orientation_deadband=orientation_deadband,
+        gripper_deadband=gripper_deadband,
     )
 
 
@@ -265,6 +271,28 @@ def test_trajectory_smoother_fills_short_nonfinite_gap() -> None:
     assert math.isfinite(target.pose_6d[0])
     assert math.isfinite(target.gripper_pos)
     assert target.gap_filled is True
+
+
+def test_trajectory_smoother_deadband_holds_small_input_changes() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            enabled=False,
+            position_deadband=0.01,
+            orientation_deadband=0.05,
+            gripper_deadband=0.005,
+        )
+    )
+
+    first = smoother.process(np.zeros(6), 0.02)
+    small = smoother.process(np.array([0.003, 0.0, 0.0, 0.0, 0.01, 0.0]), 0.022)
+    large = smoother.process(np.array([0.02, 0.0, 0.0, 0.0, 0.08, 0.0]), 0.03)
+
+    assert np.allclose(first.pose_6d, np.zeros(6))
+    assert np.allclose(small.pose_6d, np.zeros(6))
+    assert math.isclose(small.gripper_pos, 0.02)
+    assert small.deadband_applied is True
+    assert np.allclose(large.pose_6d, [0.02, 0.0, 0.0, 0.0, 0.08, 0.0])
+    assert math.isclose(large.gripper_pos, 0.03)
 
 
 def test_trajectory_smoother_causal_sg_reduces_position_noise() -> None:

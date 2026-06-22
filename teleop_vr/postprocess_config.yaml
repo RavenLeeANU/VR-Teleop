@@ -26,6 +26,11 @@ postprocess:
   # Short NaN/Inf gaps are held at the last valid command before later smoothing.
   max_missing_frames: 10
 
+  # Hold the previous target when VR recognition changes are below these thresholds.
+  position_deadband: 0.003
+  orientation_deadband: 0.01
+  gripper_deadband: 0.001
+
   # Online causal Savitzky-Golay smoothing for position channels.
   sg_position_enabled: true
   sg_window_size: 21
