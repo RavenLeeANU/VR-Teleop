@@ -1,4 +1,4 @@
-postprocess:
+﻿postprocess:
   enabled: true
   alpha: 0.4
 
@@ -29,7 +29,8 @@ postprocess:
   # Hold the previous target when VR recognition changes are below these thresholds.
   position_deadband: 0.003
   orientation_deadband: 0.01
-  gripper_deadband: 0.001
+  # Gripper bypasses postprocess filtering; this is kept at 0 for config compatibility.
+  gripper_deadband: 0.0
 
   # Online causal Savitzky-Golay smoothing for position channels.
   sg_position_enabled: true
@@ -40,3 +41,5 @@ postprocess:
   orientation_ema_enabled: true
   orientation_ema_alpha_x: 0.15
   orientation_ema_alpha_y: 0.15
+
+

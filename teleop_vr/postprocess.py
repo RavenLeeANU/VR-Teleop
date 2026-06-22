@@ -400,13 +400,9 @@ class TrajectorySmoother:
 
         raw_gripper = float(raw_gripper_pos)
         raw_pose, raw_gripper, gap_filled = self._fill_short_gap(raw_pose, raw_gripper)
-        raw_pose, raw_gripper, deadband_applied = self._apply_deadband(
-            raw_pose,
-            raw_gripper,
-        )
+        raw_pose, deadband_applied = self._apply_deadband(raw_pose)
         raw_pose, position_smoothed = self._smooth_position(raw_pose)
         raw_pose, orientation_smoothed = self._smooth_orientation(raw_pose)
-        raw_gripper, gripper_limited = self._apply_gripper_limits(raw_gripper)
         raw_command = _compose_command(raw_pose, raw_gripper)
         if not self._config.enabled:
             limited = (
@@ -414,13 +410,11 @@ class TrajectorySmoother:
                 or deadband_applied
                 or position_smoothed
                 or orientation_smoothed
-                or gripper_limited
             )
             return SmoothedTarget(
                 raw_pose.copy(),
                 raw_gripper,
                 limited,
-                command_limited=gripper_limited,
                 gap_filled=gap_filled,
                 deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
@@ -431,6 +425,7 @@ class TrajectorySmoother:
             raw_command[3:6] = self._command[3:6] + wrap_angle_delta(
                 raw_command[3:6] - self._command[3:6]
             )
+            raw_command[6] = raw_gripper
 
         raw_command, command_limited = self._apply_command_limits(raw_command)
 
@@ -455,12 +450,13 @@ class TrajectorySmoother:
         current = self._command
         delta = raw_command - current
         delta[3:6] = wrap_angle_delta(delta[3:6])
+        delta[6] = 0.0
 
         step_delta, step_limited = _limit_command_groups(
             delta,
             pos_limit=self._config.max_pos_step,
             ori_limit=self._config.max_ori_step,
-            gripper_limit=self._config.max_gripper_step,
+            gripper_limit=float("inf"),
         )
         desired_delta = self._config.alpha * step_delta
 
@@ -468,7 +464,7 @@ class TrajectorySmoother:
             desired_delta,
             pos_limit=self._config.max_pos_velocity * self._cmd_dt,
             ori_limit=self._config.max_ori_velocity * self._cmd_dt,
-            gripper_limit=self._config.max_gripper_velocity * self._cmd_dt,
+            gripper_limit=float("inf"),
         )
 
         desired_velocity = desired_delta / self._cmd_dt
@@ -476,7 +472,7 @@ class TrajectorySmoother:
             desired_velocity - self._velocity,
             pos_limit=self._config.max_pos_acceleration * self._cmd_dt,
             ori_limit=self._config.max_ori_acceleration * self._cmd_dt,
-            gripper_limit=self._config.max_gripper_acceleration * self._cmd_dt,
+            gripper_limit=float("inf"),
         )
         desired_velocity = self._velocity + velocity_delta
 
@@ -485,13 +481,14 @@ class TrajectorySmoother:
             desired_acceleration - self._acceleration,
             pos_limit=self._config.max_pos_jerk * self._cmd_dt,
             ori_limit=self._config.max_ori_jerk * self._cmd_dt,
-            gripper_limit=self._config.max_gripper_jerk * self._cmd_dt,
+            gripper_limit=float("inf"),
         )
         desired_acceleration = self._acceleration + acceleration_delta
         desired_velocity = self._velocity + desired_acceleration * self._cmd_dt
         desired_delta = desired_velocity * self._cmd_dt
 
         next_command = current + desired_delta
+        next_command[6] = raw_gripper
         next_command, final_command_limited = self._apply_command_limits(next_command)
         command_limited = command_limited or final_command_limited
 
@@ -537,14 +534,7 @@ class TrajectorySmoother:
             limited[:6] = np.maximum(limited[:6], self._config.pose_min)
         if self._config.pose_max is not None:
             limited[:6] = np.minimum(limited[:6], self._config.pose_max)
-        limited[6], _ = self._apply_gripper_limits(float(limited[6]))
         return limited, bool(np.any(np.abs(limited - command) > 1e-12))
-
-    def _apply_gripper_limits(self, gripper_pos: float) -> tuple[float, bool]:
-        limited = max(float(gripper_pos), self._config.gripper_min)
-        if self._config.gripper_max is not None:
-            limited = min(limited, self._config.gripper_max)
-        return limited, abs(limited - float(gripper_pos)) > 1e-12
 
     def _fill_short_gap(
         self,
@@ -572,27 +562,20 @@ class TrajectorySmoother:
         filled_gripper = raw_gripper if gripper_finite else self._last_input_gripper
         return filled_pose, filled_gripper, True
 
-    def _apply_deadband(
-        self,
-        raw_pose: np.ndarray,
-        raw_gripper: float,
-    ) -> tuple[np.ndarray, float, bool]:
+    def _apply_deadband(self, raw_pose: np.ndarray) -> tuple[np.ndarray, bool]:
         if (
             self._config.position_deadband <= 0.0
             and self._config.orientation_deadband <= 0.0
-            and self._config.gripper_deadband <= 0.0
         ):
-            return raw_pose, raw_gripper, False
-        if not bool(np.all(np.isfinite(raw_pose))) or not math.isfinite(raw_gripper):
-            return raw_pose, raw_gripper, False
+            return raw_pose, False
+        if not bool(np.all(np.isfinite(raw_pose))):
+            return raw_pose, False
 
-        if self._deadband_pose is None or self._deadband_gripper is None:
+        if self._deadband_pose is None:
             self._deadband_pose = raw_pose.copy()
-            self._deadband_gripper = raw_gripper
-            return raw_pose, raw_gripper, False
+            return raw_pose, False
 
         filtered_pose = raw_pose.copy()
-        filtered_gripper = raw_gripper
         applied = False
 
         pos_delta = raw_pose[:3] - self._deadband_pose[:3]
@@ -615,16 +598,7 @@ class TrajectorySmoother:
         else:
             self._deadband_pose[3:6] = raw_pose[3:6]
 
-        if (
-            self._config.gripper_deadband > 0.0
-            and abs(raw_gripper - self._deadband_gripper) < self._config.gripper_deadband
-        ):
-            filtered_gripper = self._deadband_gripper
-            applied = True
-        else:
-            self._deadband_gripper = raw_gripper
-
-        return filtered_pose, filtered_gripper, applied
+        return filtered_pose, applied
 
     def _smooth_position(self, raw_pose: np.ndarray) -> tuple[np.ndarray, bool]:
         if not self._config.sg_position_enabled:
