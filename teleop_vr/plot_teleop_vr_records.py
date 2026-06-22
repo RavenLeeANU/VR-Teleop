@@ -34,6 +34,12 @@ def _parse_args() -> argparse.Namespace:
         help="Path to *_vr_raw.csv. Required for --network if converted_csv is omitted.",
     )
     parser.add_argument(
+        "--robot-state",
+        type=Path,
+        default=None,
+        help="Path to *_robot_state.csv for robot command/state/error diagnostics.",
+    )
+    parser.add_argument(
         "--save",
         type=Path,
         default=None,
@@ -587,6 +593,107 @@ def _plot_network(raw_rows: list[dict[str, str]], *, jitter_threshold_ms: float)
     return fig
 
 
+def _plot_robot_state(rows: list[dict[str, str]]) -> object:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError("matplotlib is required: pip install matplotlib") from exc
+
+    time_s = _relative_time(rows, "sent_at_monotonic_s")
+    fig, axes = plt.subplots(4, 3, figsize=(18, 14), sharex=True)
+    fig.suptitle("Robot State Diagnostics")
+
+    for col, axis_name in enumerate(("x", "y", "z")):
+        axes[0, col].set_title(f"Position {axis_name.upper()}")
+        axes[0, col].plot(time_s, _series(rows, f"cmd_{axis_name}"), label="cmd")
+        axes[0, col].plot(time_s, _series(rows, f"state_{axis_name}"), label="state")
+        axes[0, col].set_ylabel("m")
+        axes[0, col].legend(loc="best")
+        axes[0, col].grid(True, alpha=0.3)
+
+    for col, axis_name in enumerate(("roll", "pitch", "yaw")):
+        axes[1, col].set_title(axis_name.title())
+        axes[1, col].plot(time_s, _series(rows, f"cmd_{axis_name}"), label="cmd")
+        axes[1, col].plot(time_s, _series(rows, f"state_{axis_name}"), label="state")
+        axes[1, col].set_ylabel("rad")
+        axes[1, col].legend(loc="best")
+        axes[1, col].grid(True, alpha=0.3)
+
+    for col, axis_name in enumerate(("x", "y", "z")):
+        values = _series(rows, f"error_{axis_name}")
+        axes[2, col].set_title(f"Position Error {axis_name.upper()}")
+        axes[2, col].plot(time_s, values, label=f"error_{axis_name}")
+        _draw_mean_line(axes[2, col], values, unit="m")
+        axes[2, col].set_ylabel("m")
+        axes[2, col].legend(loc="best")
+        axes[2, col].grid(True, alpha=0.3)
+
+    axes[3, 0].set_title("Gripper")
+    axes[3, 0].plot(time_s, _series(rows, "cmd_gripper_pos"), label="cmd")
+    axes[3, 0].plot(time_s, _series(rows, "state_gripper_pos"), label="state")
+    axes[3, 0].set_ylabel("m")
+    axes[3, 0].legend(loc="best")
+    axes[3, 0].grid(True, alpha=0.3)
+
+    axes[3, 1].set_title("Orientation Error Norm")
+    ori_error_norm = [
+        math.sqrt(roll * roll + pitch * pitch + yaw * yaw)
+        if math.isfinite(roll) and math.isfinite(pitch) and math.isfinite(yaw)
+        else math.nan
+        for roll, pitch, yaw in zip(
+            _series(rows, "error_roll"),
+            _series(rows, "error_pitch"),
+            _series(rows, "error_yaw"),
+            strict=True,
+        )
+    ]
+    axes[3, 1].plot(time_s, ori_error_norm, label="orientation error norm")
+    _draw_mean_line(axes[3, 1], ori_error_norm, unit="rad")
+    axes[3, 1].set_ylabel("rad")
+    axes[3, 1].legend(loc="best")
+    axes[3, 1].grid(True, alpha=0.3)
+
+    axes[3, 2].set_title("Summary")
+    axes[3, 2].axis("off")
+    pos_error_norm = [
+        math.sqrt(x * x + y * y + z * z)
+        if math.isfinite(x) and math.isfinite(y) and math.isfinite(z)
+        else math.nan
+        for x, y, z in zip(
+            _series(rows, "error_x"),
+            _series(rows, "error_y"),
+            _series(rows, "error_z"),
+            strict=True,
+        )
+    ]
+    dt_ms = _diff(_series(rows, "sent_at_monotonic_s"), scale=1000.0)
+    summary_lines = [
+        f"rows={len(rows)}",
+        _summary_text("sample dt", dt_ms, "ms"),
+        _frame_rate_summary("robot state sample", dt_ms),
+        "",
+        _summary_text("position error norm", pos_error_norm, "m"),
+        _summary_text("orientation error norm", ori_error_norm, "rad"),
+        _summary_text("gripper error", _series(rows, "error_gripper_pos"), "m"),
+    ]
+    axes[3, 2].text(
+        0.0,
+        1.0,
+        "\n".join(summary_lines),
+        va="top",
+        ha="left",
+        family="monospace",
+    )
+
+    for row in axes:
+        for ax in row:
+            if ax.axison:
+                ax.set_xlabel("time from first robot state sample (s)")
+
+    fig.tight_layout()
+    return fig
+
+
 def _save_figure(fig: object, save_path: Path, suffix: str | None = None) -> None:
     path = save_path
     if suffix is not None:
@@ -598,6 +705,20 @@ def _save_figure(fig: object, save_path: Path, suffix: str | None = None) -> Non
 
 def main() -> int:
     args = _parse_args()
+    if args.robot_state is not None:
+        robot_state_path = args.robot_state.expanduser().resolve()
+        robot_state_rows = _read_csv(robot_state_path)
+        if not robot_state_rows:
+            raise RuntimeError(f"No robot state records in {robot_state_path}")
+        figures = [(None, _plot_robot_state(robot_state_rows))]
+        if args.save is not None:
+            _save_figure(figures[0][1], args.save.expanduser().resolve(), None)
+        if not args.no_show:
+            import matplotlib.pyplot as plt
+
+            plt.show()
+        return 0
+
     converted_path = (
         None if args.converted_csv is None else args.converted_csv.expanduser().resolve()
     )

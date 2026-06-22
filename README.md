@@ -37,3 +37,10 @@ python -m teleop_vr.plot_teleop_vr_records records\test03_converted.csv --save r
 ```
 python -m teleop_vr.smooth_trajectory_experiment records\test03_converted.csv --source converted --postprocess-config teleop_vr\postprocess_config.yaml --save records\test03_smooth_exp.png --no-show
 ```
+
+
+```
+python -m teleop_vr.plot_teleop_vr_records --network --raw records\test02_vr_raw.csv                                              
+python -m teleop_vr.smooth_trajectory_experiment records\test02_converted.csv --source converted                                  
+python -m teleop_vr.plot_teleop_vr_records --robot-state records\test02_robot_state.csv --save records\test02_robot_state_check.png --no-show
+```
