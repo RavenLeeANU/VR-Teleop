@@ -30,7 +30,7 @@
 
   # Hold the previous target when VR recognition changes are below these thresholds.
   position_deadband: 0.01
-  orientation_deadband: 0.002
+  orientation_deadband: 0.02
   deadband_velocity_threshold: null
   # Gripper bypasses postprocess filtering; this is kept at 0 for config compatibility.
   gripper_deadband: 0.003
@@ -59,8 +59,8 @@
   mpc_damping_ratio: 1.8
   mpc_reference_velocity_gain: 1.0
   # Rotation needs less damping than position; keep position stable while letting wrist rotation follow.
-  mpc_orientation_tracking_frequency: 5.0
-  mpc_orientation_damping_ratio: 1.5
+  mpc_orientation_tracking_frequency: 4.0
+  mpc_orientation_damping_ratio: 1.4
   mpc_orientation_reference_velocity_gain: 1.0
 
   # Geometry-aware spline before MPC: Catmull-Rom for position/gripper, SO(3) log-exp spline for orientation.
