@@ -60,6 +60,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gripper-jerk", type=float, default=40.0)
     parser.add_argument("--gripper-min", type=float, default=0.0)
     parser.add_argument("--gripper-max", type=float, default=None)
+    parser.add_argument("--gripper-closed-threshold", type=float, default=None)
+    parser.add_argument("--gripper-open-threshold", type=float, default=None)
     parser.add_argument("--max-missing-frames", type=int, default=10)
     parser.add_argument("--position-deadband", type=float, default=0.0)
     parser.add_argument("--orientation-deadband", type=float, default=0.0)
@@ -82,6 +84,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mpc-tracking-frequency", type=float, default=12.0)
     parser.add_argument("--mpc-damping-ratio", type=float, default=1.0)
     parser.add_argument("--mpc-reference-velocity-gain", type=float, default=1.0)
+    parser.add_argument("--mpc-orientation-tracking-frequency", type=float, default=None)
+    parser.add_argument("--mpc-orientation-damping-ratio", type=float, default=None)
+    parser.add_argument("--mpc-orientation-reference-velocity-gain", type=float, default=None)
+    parser.add_argument("--manifold-spline-enabled", action="store_true")
+    parser.add_argument("--manifold-spline-position-tension", type=float, default=0.5)
+    parser.add_argument("--manifold-spline-orientation-tension", type=float, default=0.5)
     parser.add_argument("--sg-position-enabled", action="store_true")
     parser.add_argument("--sg-window-size", type=int, default=21)
     parser.add_argument("--sg-poly-order", type=int, default=2)
@@ -188,6 +196,8 @@ def _build_config(args: argparse.Namespace) -> DampingConfig:
         max_gripper_jerk=args.max_gripper_jerk,
         gripper_min=args.gripper_min,
         gripper_max=args.gripper_max,
+        gripper_closed_threshold=args.gripper_closed_threshold,
+        gripper_open_threshold=args.gripper_open_threshold,
         max_missing_frames=args.max_missing_frames,
         position_deadband=args.position_deadband,
         orientation_deadband=args.orientation_deadband,
@@ -210,6 +220,12 @@ def _build_config(args: argparse.Namespace) -> DampingConfig:
         mpc_tracking_frequency=args.mpc_tracking_frequency,
         mpc_damping_ratio=args.mpc_damping_ratio,
         mpc_reference_velocity_gain=args.mpc_reference_velocity_gain,
+        mpc_orientation_tracking_frequency=args.mpc_orientation_tracking_frequency,
+        mpc_orientation_damping_ratio=args.mpc_orientation_damping_ratio,
+        mpc_orientation_reference_velocity_gain=args.mpc_orientation_reference_velocity_gain,
+        manifold_spline_enabled=args.manifold_spline_enabled,
+        manifold_spline_position_tension=args.manifold_spline_position_tension,
+        manifold_spline_orientation_tension=args.manifold_spline_orientation_tension,
         sg_position_enabled=args.sg_position_enabled,
         sg_window_size=args.sg_window_size,
         sg_poly_order=args.sg_poly_order,
@@ -244,6 +260,7 @@ def _run_smoother(
         "input_spike_rejected": np.zeros(len(pose), dtype=bool),
         "transition_active": np.zeros(len(pose), dtype=bool),
         "mpc_tracking_active": np.zeros(len(pose), dtype=bool),
+        "manifold_spline_active": np.zeros(len(pose), dtype=bool),
     }
 
     last_pose: np.ndarray | None = None
@@ -274,6 +291,7 @@ def _run_smoother(
         flags["input_spike_rejected"][index] = target.input_spike_rejected
         flags["transition_active"][index] = target.transition_active
         flags["mpc_tracking_active"][index] = target.mpc_tracking_active
+        flags["manifold_spline_active"][index] = target.manifold_spline_active
         last_pose = target.pose_6d
         last_gripper = target.gripper_pos
 
@@ -348,6 +366,7 @@ def _plot_experiment(
         "input_spike_rejected",
         "transition_active",
         "mpc_tracking_active",
+        "manifold_spline_active",
         "gap_filled",
     ]
     axes[3, 0].set_title("Limiter Flags")

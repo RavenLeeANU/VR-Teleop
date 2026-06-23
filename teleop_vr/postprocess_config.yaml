@@ -7,28 +7,30 @@
   max_gripper_step: 0.005
 
   max_pos_velocity: 0.5
-  max_ori_velocity: 2.0
+  max_ori_velocity: 6.0
   max_gripper_velocity: 0.08
 
   max_pos_acceleration: 1.5
-  max_ori_acceleration: 2.6
+  max_ori_acceleration: 20.0
   max_gripper_acceleration: 0.40
 
   max_pos_jerk: 300.0
-  max_ori_jerk: 400.0
+  max_ori_jerk: 2000.0
   max_gripper_jerk: 40.0
 
   pose_min: null
   pose_max: null
   gripper_min: 0.0
   gripper_max: null
+  gripper_closed_threshold: 0.02
+  gripper_open_threshold: 0.06
 
   # Short NaN/Inf gaps are held at the last valid command before later smoothing.
   max_missing_frames: 10
 
   # Hold the previous target when VR recognition changes are below these thresholds.
   position_deadband: 0.01
-  orientation_deadband: 0.01
+  orientation_deadband: 0.002
   deadband_velocity_threshold: null
   # Gripper bypasses postprocess filtering; this is kept at 0 for config compatibility.
   gripper_deadband: 0.003
@@ -56,6 +58,15 @@
   mpc_tracking_frequency: 4.0
   mpc_damping_ratio: 1.8
   mpc_reference_velocity_gain: 1.0
+  # Rotation needs less damping than position; keep position stable while letting wrist rotation follow.
+  mpc_orientation_tracking_frequency: 5.0
+  mpc_orientation_damping_ratio: 1.5
+  mpc_orientation_reference_velocity_gain: 1.0
+
+  # Geometry-aware spline before MPC: Catmull-Rom for position/gripper, SO(3) log-exp spline for orientation.
+  manifold_spline_enabled: false
+  manifold_spline_position_tension: 1.0
+  manifold_spline_orientation_tension: 1.0
 
   # Online causal Savitzky-Golay smoothing for position channels.
   sg_position_enabled: false

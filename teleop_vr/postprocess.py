@@ -30,6 +30,8 @@ class DampingConfig:
     pose_max: np.ndarray | None = None
     gripper_min: float = 0.0
     gripper_max: float | None = None
+    gripper_closed_threshold: float | None = None
+    gripper_open_threshold: float | None = None
     max_missing_frames: int = 10
     sg_position_enabled: bool = False
     sg_window_size: int = 21
@@ -58,6 +60,12 @@ class DampingConfig:
     mpc_tracking_frequency: float = 12.0
     mpc_damping_ratio: float = 1.0
     mpc_reference_velocity_gain: float = 1.0
+    mpc_orientation_tracking_frequency: float | None = None
+    mpc_orientation_damping_ratio: float | None = None
+    mpc_orientation_reference_velocity_gain: float | None = None
+    manifold_spline_enabled: bool = False
+    manifold_spline_position_tension: float = 0.5
+    manifold_spline_orientation_tension: float = 0.5
 
 
 def _to_optional_pose_array(value: object, name: str) -> np.ndarray | None:
@@ -102,6 +110,8 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         "pose_max": None,
         "gripper_min": 0.0,
         "gripper_max": None,
+        "gripper_closed_threshold": None,
+        "gripper_open_threshold": None,
         "max_missing_frames": 10,
         "sg_position_enabled": False,
         "sg_window_size": 21,
@@ -130,6 +140,12 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         "mpc_tracking_frequency": 12.0,
         "mpc_damping_ratio": 1.0,
         "mpc_reference_velocity_gain": 1.0,
+        "mpc_orientation_tracking_frequency": None,
+        "mpc_orientation_damping_ratio": None,
+        "mpc_orientation_reference_velocity_gain": None,
+        "manifold_spline_enabled": False,
+        "manifold_spline_position_tension": 0.5,
+        "manifold_spline_orientation_tension": 0.5,
     }
     if path is not None:
         data = _read_yaml(Path(path))
@@ -163,6 +179,16 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         gripper_max=(
             None if values["gripper_max"] is None else float(values["gripper_max"])
         ),
+        gripper_closed_threshold=(
+            None
+            if values["gripper_closed_threshold"] is None
+            else float(values["gripper_closed_threshold"])
+        ),
+        gripper_open_threshold=(
+            None
+            if values["gripper_open_threshold"] is None
+            else float(values["gripper_open_threshold"])
+        ),
         max_missing_frames=int(values["max_missing_frames"]),
         sg_position_enabled=bool(values["sg_position_enabled"]),
         sg_window_size=int(values["sg_window_size"]),
@@ -195,6 +221,24 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         mpc_tracking_frequency=float(values["mpc_tracking_frequency"]),
         mpc_damping_ratio=float(values["mpc_damping_ratio"]),
         mpc_reference_velocity_gain=float(values["mpc_reference_velocity_gain"]),
+        mpc_orientation_tracking_frequency=(
+            None
+            if values["mpc_orientation_tracking_frequency"] is None
+            else float(values["mpc_orientation_tracking_frequency"])
+        ),
+        mpc_orientation_damping_ratio=(
+            None
+            if values["mpc_orientation_damping_ratio"] is None
+            else float(values["mpc_orientation_damping_ratio"])
+        ),
+        mpc_orientation_reference_velocity_gain=(
+            None
+            if values["mpc_orientation_reference_velocity_gain"] is None
+            else float(values["mpc_orientation_reference_velocity_gain"])
+        ),
+        manifold_spline_enabled=bool(values["manifold_spline_enabled"]),
+        manifold_spline_position_tension=float(values["manifold_spline_position_tension"]),
+        manifold_spline_orientation_tension=float(values["manifold_spline_orientation_tension"]),
     )
     validate_damping_config(config)
     return config
@@ -228,6 +272,12 @@ def validate_damping_config(config: DampingConfig) -> None:
         raise ValueError("pose_min values must be <= pose_max values")
     if config.gripper_max is not None and config.gripper_min > config.gripper_max:
         raise ValueError("gripper_min must be <= gripper_max")
+    if (
+        config.gripper_closed_threshold is not None
+        and config.gripper_open_threshold is not None
+        and config.gripper_closed_threshold > config.gripper_open_threshold
+    ):
+        raise ValueError("gripper_closed_threshold must be <= gripper_open_threshold")
     if config.max_missing_frames < 0:
         raise ValueError("max_missing_frames must be >= 0")
     if config.sg_window_size < 1:
@@ -275,6 +325,25 @@ def validate_damping_config(config: DampingConfig) -> None:
         raise ValueError("mpc_damping_ratio must be positive")
     if config.mpc_reference_velocity_gain < 0.0:
         raise ValueError("mpc_reference_velocity_gain must be >= 0")
+    if (
+        config.mpc_orientation_tracking_frequency is not None
+        and config.mpc_orientation_tracking_frequency <= 0.0
+    ):
+        raise ValueError("mpc_orientation_tracking_frequency must be positive")
+    if (
+        config.mpc_orientation_damping_ratio is not None
+        and config.mpc_orientation_damping_ratio <= 0.0
+    ):
+        raise ValueError("mpc_orientation_damping_ratio must be positive")
+    if (
+        config.mpc_orientation_reference_velocity_gain is not None
+        and config.mpc_orientation_reference_velocity_gain < 0.0
+    ):
+        raise ValueError("mpc_orientation_reference_velocity_gain must be >= 0")
+    if not 0.0 <= config.manifold_spline_position_tension <= 1.0:
+        raise ValueError("manifold_spline_position_tension must be in [0, 1]")
+    if not 0.0 <= config.manifold_spline_orientation_tension <= 1.0:
+        raise ValueError("manifold_spline_orientation_tension must be in [0, 1]")
 
 
 @dataclass
@@ -295,6 +364,7 @@ class SmoothedTarget:
     input_spike_rejected: bool = False
     transition_active: bool = False
     mpc_tracking_active: bool = False
+    manifold_spline_active: bool = False
 
 
 def wrap_angle_delta(delta: np.ndarray) -> np.ndarray:
@@ -352,6 +422,91 @@ def rotmat_to_rpy(rot: np.ndarray) -> np.ndarray:
         pitch = np.arctan2(-rot[2, 0], sy)
         yaw = 0.0
     return np.array([roll, pitch, yaw], dtype=float)
+
+
+def _skew(vector: np.ndarray) -> np.ndarray:
+    x, y, z = vector
+    return np.array(
+        [
+            [0.0, -z, y],
+            [z, 0.0, -x],
+            [-y, x, 0.0],
+        ],
+        dtype=float,
+    )
+
+
+def so3_exp(vector: np.ndarray) -> np.ndarray:
+    theta = float(np.linalg.norm(vector))
+    omega_hat = _skew(vector)
+    if theta < 1e-9:
+        return np.eye(3, dtype=float) + omega_hat
+    a = math.sin(theta) / theta
+    b = (1.0 - math.cos(theta)) / (theta * theta)
+    return np.eye(3, dtype=float) + a * omega_hat + b * (omega_hat @ omega_hat)
+
+
+def so3_log(rot: np.ndarray) -> np.ndarray:
+    trace_value = float(np.trace(rot))
+    cos_theta = float(np.clip((trace_value - 1.0) * 0.5, -1.0, 1.0))
+    theta = math.acos(cos_theta)
+    if theta < 1e-9:
+        return np.array(
+            [
+                0.5 * (rot[2, 1] - rot[1, 2]),
+                0.5 * (rot[0, 2] - rot[2, 0]),
+                0.5 * (rot[1, 0] - rot[0, 1]),
+            ],
+            dtype=float,
+        )
+    scale = theta / (2.0 * math.sin(theta))
+    return scale * np.array(
+        [
+            rot[2, 1] - rot[1, 2],
+            rot[0, 2] - rot[2, 0],
+            rot[1, 0] - rot[0, 1],
+        ],
+        dtype=float,
+    )
+
+
+def _catmull_rom(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    p3: np.ndarray,
+    t: float,
+    tension: float,
+) -> np.ndarray:
+    tangent_scale = 0.5 * (1.0 - tension)
+    m1 = tangent_scale * (p2 - p0)
+    m2 = tangent_scale * (p3 - p1)
+    t2 = t * t
+    t3 = t2 * t
+    h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+    h10 = t3 - 2.0 * t2 + t
+    h01 = -2.0 * t3 + 3.0 * t2
+    h11 = t3 - t2
+    return h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2
+
+
+def _spline_so3(
+    r0: np.ndarray,
+    r1: np.ndarray,
+    r2: np.ndarray,
+    r3: np.ndarray,
+    t: float,
+    tension: float,
+) -> np.ndarray:
+    relative_10 = so3_log(r1.T @ r0)
+    relative_12 = so3_log(r1.T @ r2)
+    relative_13 = so3_log(r1.T @ r3)
+    v0 = np.zeros(3, dtype=float)
+    v1 = relative_12
+    v_prev = relative_10
+    v_next = relative_13
+    local = _catmull_rom(v_prev, v0, v1, v_next, t, tension)
+    return r1 @ so3_exp(local)
 
 
 def _normalize_axis(axis: np.ndarray, fallback: np.ndarray) -> np.ndarray:
@@ -479,6 +634,8 @@ class TrajectorySmoother:
         self._mpc_reference_window: deque[np.ndarray] = deque(
             maxlen=max(2, config.mpc_delay_frames + 2)
         )
+        self._spline_window: deque[np.ndarray] = deque(maxlen=4)
+        self._spline_rpy: np.ndarray | None = None
         self._missing_count = 0
 
     def reset(self) -> None:
@@ -500,6 +657,8 @@ class TrajectorySmoother:
         self._pending_jump_count = 0
         self._stationary_cooldown = 0
         self._mpc_reference_window.clear()
+        self._spline_window.clear()
+        self._spline_rpy = None
         self._missing_count = 0
 
     def process(self, raw_pose_6d: np.ndarray, raw_gripper_pos: float) -> SmoothedTarget:
@@ -509,6 +668,7 @@ class TrajectorySmoother:
 
         raw_gripper = float(raw_gripper_pos)
         raw_pose, raw_gripper, gap_filled = self._fill_short_gap(raw_pose, raw_gripper)
+        raw_gripper = self._shape_gripper(raw_gripper)
         if self._config.enabled and self._config.mpc_tracking_enabled:
             raw_pose, deadband_applied = self._apply_deadband(raw_pose)
             return self._process_mpc_tracking(
@@ -685,6 +845,22 @@ class TrajectorySmoother:
             clipped = min(float(self._config.gripper_max), clipped)
         return clipped, not math.isclose(clipped, gripper_pos)
 
+    def _shape_gripper(self, gripper_pos: float) -> float:
+        if not math.isfinite(gripper_pos):
+            return gripper_pos
+        if (
+            self._config.gripper_closed_threshold is not None
+            and gripper_pos < self._config.gripper_closed_threshold
+        ):
+            return float(self._config.gripper_min)
+        if (
+            self._config.gripper_open_threshold is not None
+            and gripper_pos > self._config.gripper_open_threshold
+        ):
+            if self._config.gripper_max is not None:
+                return float(self._config.gripper_max)
+        return gripper_pos
+
     def _process_mpc_tracking(
         self,
         raw_pose: np.ndarray,
@@ -694,6 +870,7 @@ class TrajectorySmoother:
     ) -> SmoothedTarget:
         raw_command = _compose_command(raw_pose, raw_gripper)
         raw_command, command_limited = self._apply_command_limits(raw_command)
+        raw_command, manifold_spline_active = self._apply_manifold_spline(raw_command)
         self._mpc_reference_window.append(raw_command.copy())
         reference, reference_velocity = self._mpc_delayed_reference()
 
@@ -708,33 +885,60 @@ class TrajectorySmoother:
                 gap_filled=gap_filled,
                 deadband_applied=deadband_applied,
                 mpc_tracking_active=True,
+                manifold_spline_active=manifold_spline_active,
             )
 
         reference[3:6] = self._command[3:6] + wrap_angle_delta(
             reference[3:6] - self._command[3:6]
         )
+        reference[6] = raw_gripper
         current = self._command
         error = reference - current
         error[3:6] = wrap_angle_delta(error[3:6])
+        error[6] = 0.0
         velocity_error = self._config.mpc_reference_velocity_gain * reference_velocity - self._velocity
+        ori_velocity_gain = (
+            self._config.mpc_reference_velocity_gain
+            if self._config.mpc_orientation_reference_velocity_gain is None
+            else self._config.mpc_orientation_reference_velocity_gain
+        )
+        velocity_error[3:6] = ori_velocity_gain * reference_velocity[3:6] - self._velocity[3:6]
+        velocity_error[6] = 0.0
 
-        omega = 2.0 * math.pi * self._config.mpc_tracking_frequency
-        desired_acceleration = (
-            omega * omega * error
-            + 2.0 * self._config.mpc_damping_ratio * omega * velocity_error
+        pos_omega = 2.0 * math.pi * self._config.mpc_tracking_frequency
+        ori_frequency = (
+            self._config.mpc_tracking_frequency
+            if self._config.mpc_orientation_tracking_frequency is None
+            else self._config.mpc_orientation_tracking_frequency
+        )
+        ori_damping = (
+            self._config.mpc_damping_ratio
+            if self._config.mpc_orientation_damping_ratio is None
+            else self._config.mpc_orientation_damping_ratio
+        )
+        ori_omega = 2.0 * math.pi * ori_frequency
+
+        desired_acceleration = np.zeros_like(error)
+        desired_acceleration[:3] = (
+            pos_omega * pos_omega * error[:3]
+            + 2.0 * self._config.mpc_damping_ratio * pos_omega * velocity_error[:3]
+        )
+        desired_acceleration[3:6] = (
+            ori_omega * ori_omega * error[3:6]
+            + 2.0 * ori_damping * ori_omega * velocity_error[3:6]
         )
         acceleration_delta, jerk_limited = _limit_command_groups(
             desired_acceleration - self._acceleration,
             pos_limit=self._config.max_pos_jerk * self._cmd_dt,
             ori_limit=self._config.max_ori_jerk * self._cmd_dt,
-            gripper_limit=self._config.max_gripper_jerk * self._cmd_dt,
+            gripper_limit=float("inf"),
         )
         desired_acceleration = self._acceleration + acceleration_delta
         desired_acceleration, acceleration_limited = _limit_command_groups(
             desired_acceleration,
             pos_limit=self._config.max_pos_acceleration,
             ori_limit=self._config.max_ori_acceleration,
-            gripper_limit=self._config.max_gripper_acceleration,
+            gripper_limit=float("inf"),
         )
 
         desired_velocity = self._velocity + desired_acceleration * self._cmd_dt
@@ -742,7 +946,7 @@ class TrajectorySmoother:
             desired_velocity,
             pos_limit=self._config.max_pos_velocity,
             ori_limit=self._config.max_ori_velocity,
-            gripper_limit=self._config.max_gripper_velocity,
+            gripper_limit=float("inf"),
         )
 
         desired_delta = desired_velocity * self._cmd_dt
@@ -750,15 +954,17 @@ class TrajectorySmoother:
             desired_delta,
             pos_limit=self._config.max_pos_step,
             ori_limit=self._config.max_ori_step,
-            gripper_limit=self._config.max_gripper_step,
+            gripper_limit=float("inf"),
         )
 
         next_command = current + desired_delta
+        next_command[6] = raw_gripper
         next_command, final_command_limited = self._apply_command_limits(next_command)
         command_limited = command_limited or final_command_limited
 
         actual_delta = next_command - current
         actual_delta[3:6] = wrap_angle_delta(actual_delta[3:6])
+        actual_delta[6] = 0.0
         actual_velocity = actual_delta / self._cmd_dt
         actual_acceleration = (actual_velocity - self._velocity) / self._cmd_dt
 
@@ -775,6 +981,7 @@ class TrajectorySmoother:
             or command_limited
             or gap_filled
             or deadband_applied
+            or manifold_spline_active
         )
         return SmoothedTarget(
             pose_6d,
@@ -788,7 +995,45 @@ class TrajectorySmoother:
             gap_filled=gap_filled,
             deadband_applied=deadband_applied,
             mpc_tracking_active=True,
+            manifold_spline_active=manifold_spline_active,
         )
+
+    def _apply_manifold_spline(self, raw_command: np.ndarray) -> tuple[np.ndarray, bool]:
+        if not self._config.manifold_spline_enabled:
+            return raw_command, False
+        if not bool(np.all(np.isfinite(raw_command[:6]))):
+            self._spline_window.clear()
+            self._spline_rpy = None
+            return raw_command, False
+
+        self._spline_window.append(raw_command.copy())
+        if len(self._spline_window) < 4:
+            return raw_command, False
+
+        c0, c1, c2, c3 = list(self._spline_window)
+        smoothed = c2.copy()
+        smoothed[:3] = _catmull_rom(
+            c0[:3],
+            c1[:3],
+            c2[:3],
+            c3[:3],
+            0.5,
+            self._config.manifold_spline_position_tension,
+        )
+        rotations = [rpy_to_rotmat(command[3:6]) for command in (c0, c1, c2, c3)]
+        rot = _spline_so3(
+            rotations[0],
+            rotations[1],
+            rotations[2],
+            rotations[3],
+            0.5,
+            self._config.manifold_spline_orientation_tension,
+        )
+        smoothed[3:6] = make_rpy_continuous(rotmat_to_rpy(rot), self._spline_rpy)
+        self._spline_rpy = smoothed[3:6].copy()
+        smoothed[6] = raw_command[6]
+        smoothed, _ = self._apply_command_limits(smoothed)
+        return smoothed, True
 
     def _mpc_delayed_reference(self) -> tuple[np.ndarray, np.ndarray]:
         window = list(self._mpc_reference_window)
@@ -804,12 +1049,13 @@ class TrajectorySmoother:
 
         reference_delta = reference - previous_reference
         reference_delta[3:6] = wrap_angle_delta(reference_delta[3:6])
+        reference_delta[6] = 0.0
         reference_velocity = reference_delta / self._cmd_dt
         reference_velocity, _ = _limit_command_groups(
             reference_velocity,
             pos_limit=self._config.max_pos_velocity,
             ori_limit=self._config.max_ori_velocity,
-            gripper_limit=self._config.max_gripper_velocity,
+            gripper_limit=float("inf"),
         )
         return reference, reference_velocity
 

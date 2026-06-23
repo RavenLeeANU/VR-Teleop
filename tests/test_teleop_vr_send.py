@@ -35,6 +35,8 @@ def _config(
     pose_max: np.ndarray | None = None,
     gripper_min: float = 0.0,
     gripper_max: float | None = None,
+    gripper_closed_threshold: float | None = None,
+    gripper_open_threshold: float | None = None,
     max_missing_frames: int = 10,
     sg_position_enabled: bool = False,
     sg_window_size: int = 21,
@@ -63,6 +65,12 @@ def _config(
     mpc_tracking_frequency: float = 12.0,
     mpc_damping_ratio: float = 1.0,
     mpc_reference_velocity_gain: float = 1.0,
+    mpc_orientation_tracking_frequency: float | None = None,
+    mpc_orientation_damping_ratio: float | None = None,
+    mpc_orientation_reference_velocity_gain: float | None = None,
+    manifold_spline_enabled: bool = False,
+    manifold_spline_position_tension: float = 0.5,
+    manifold_spline_orientation_tension: float = 0.5,
 ) -> DampingConfig:
     return DampingConfig(
         enabled=enabled,
@@ -83,6 +91,8 @@ def _config(
         pose_max=pose_max,
         gripper_min=gripper_min,
         gripper_max=gripper_max,
+        gripper_closed_threshold=gripper_closed_threshold,
+        gripper_open_threshold=gripper_open_threshold,
         max_missing_frames=max_missing_frames,
         sg_position_enabled=sg_position_enabled,
         sg_window_size=sg_window_size,
@@ -111,6 +121,12 @@ def _config(
         mpc_tracking_frequency=mpc_tracking_frequency,
         mpc_damping_ratio=mpc_damping_ratio,
         mpc_reference_velocity_gain=mpc_reference_velocity_gain,
+        mpc_orientation_tracking_frequency=mpc_orientation_tracking_frequency,
+        mpc_orientation_damping_ratio=mpc_orientation_damping_ratio,
+        mpc_orientation_reference_velocity_gain=mpc_orientation_reference_velocity_gain,
+        manifold_spline_enabled=manifold_spline_enabled,
+        manifold_spline_position_tension=manifold_spline_position_tension,
+        manifold_spline_orientation_tension=manifold_spline_orientation_tension,
     )
 
 
@@ -152,6 +168,26 @@ def test_trajectory_smoother_clips_gripper_without_filtering() -> None:
     assert low.command_limited is True
     assert high.limited is True
     assert low.limited is True
+
+
+def test_trajectory_smoother_shapes_gripper_thresholds() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            enabled=False,
+            gripper_min=0.0,
+            gripper_max=0.08,
+            gripper_closed_threshold=0.02,
+            gripper_open_threshold=0.06,
+        )
+    )
+
+    closed = smoother.process(np.zeros(6), 0.019)
+    middle = smoother.process(np.zeros(6), 0.04)
+    open_target = smoother.process(np.zeros(6), 0.061)
+
+    assert math.isclose(closed.gripper_pos, 0.0)
+    assert math.isclose(middle.gripper_pos, 0.04)
+    assert math.isclose(open_target.gripper_pos, 0.08)
 
 
 def test_trajectory_smoother_limits_large_position_orientation_and_gripper_jumps() -> None:
@@ -521,6 +557,37 @@ def test_trajectory_smoother_mpc_applies_deadband_before_tracking_queue() -> Non
     assert np.allclose(small.pose_6d, np.zeros(6))
 
 
+def test_trajectory_smoother_mpc_can_track_orientation_faster_than_position() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            mpc_tracking_enabled=True,
+            mpc_delay_frames=0,
+            mpc_tracking_frequency=1.0,
+            mpc_orientation_tracking_frequency=12.0,
+            mpc_damping_ratio=1.0,
+            mpc_orientation_damping_ratio=1.0,
+            mpc_reference_velocity_gain=0.0,
+            mpc_orientation_reference_velocity_gain=0.0,
+            max_pos_step=100.0,
+            max_ori_step=100.0,
+            max_pos_velocity=100.0,
+            max_ori_velocity=100.0,
+            max_pos_acceleration=1000.0,
+            max_ori_acceleration=1000.0,
+            max_pos_jerk=1_000_000.0,
+            max_ori_jerk=1_000_000.0,
+            position_deadband=0.0,
+            orientation_deadband=0.0,
+        ),
+        cmd_dt=0.01,
+    )
+
+    smoother.process(np.zeros(6), 0.0)
+    target = smoother.process(np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]), 0.0)
+
+    assert target.pose_6d[3] > target.pose_6d[0] * 10.0
+
+
 def test_trajectory_smoother_deadband_skips_while_raw_input_is_moving() -> None:
     smoother = TrajectorySmoother(
         _config(
@@ -570,7 +637,7 @@ def test_trajectory_smoother_mpc_uses_damping_to_avoid_overshoot_on_step() -> No
     assert values[-1] > 0.98
 
 
-def test_trajectory_smoother_mpc_limits_gripper_dynamics() -> None:
+def test_trajectory_smoother_mpc_bypasses_gripper_dynamics() -> None:
     smoother = TrajectorySmoother(
         _config(
             mpc_tracking_enabled=True,
@@ -599,9 +666,42 @@ def test_trajectory_smoother_mpc_limits_gripper_dynamics() -> None:
     third = smoother.process(np.zeros(6), 1.0)
 
     assert math.isclose(first.gripper_pos, 0.0)
-    assert 0.0 < second.gripper_pos <= 0.01
-    assert second.step_limited is True
-    assert third.gripper_pos > second.gripper_pos
+    assert math.isclose(second.gripper_pos, 1.0)
+    assert math.isclose(third.gripper_pos, 1.0)
+
+
+def test_trajectory_smoother_mpc_shapes_gripper_before_tracking() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            mpc_tracking_enabled=True,
+            mpc_delay_frames=0,
+            mpc_tracking_frequency=4.0,
+            mpc_damping_ratio=1.2,
+            max_pos_step=100.0,
+            max_ori_step=100.0,
+            max_gripper_step=100.0,
+            max_pos_velocity=100.0,
+            max_ori_velocity=100.0,
+            max_gripper_velocity=100.0,
+            max_pos_acceleration=1000.0,
+            max_ori_acceleration=1000.0,
+            max_gripper_acceleration=1000.0,
+            max_pos_jerk=1_000_000.0,
+            max_ori_jerk=1_000_000.0,
+            max_gripper_jerk=1_000_000.0,
+            gripper_min=0.0,
+            gripper_max=0.08,
+            gripper_closed_threshold=0.02,
+            gripper_open_threshold=0.06,
+        ),
+        cmd_dt=0.01,
+    )
+
+    closed = smoother.process(np.zeros(6), 0.019)
+    open_target = smoother.process(np.zeros(6), 0.061)
+
+    assert math.isclose(closed.gripper_pos, 0.0)
+    assert math.isclose(open_target.gripper_pos, 0.08)
 
 
 def test_trajectory_smoother_mpc_reference_velocity_tracks_ramp_smoothly() -> None:
@@ -660,6 +760,68 @@ def test_trajectory_smoother_mpc_reference_velocity_tracks_ramp_smoothly() -> No
 
     assert np.mean(ff_error) < np.mean(no_ff_error)
     assert np.std(np.diff(ff_values[20:])) < 0.005
+
+
+def test_trajectory_smoother_manifold_spline_feeds_mpc_reference() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            mpc_tracking_enabled=True,
+            mpc_delay_frames=0,
+            mpc_tracking_frequency=4.0,
+            mpc_damping_ratio=1.2,
+            manifold_spline_enabled=True,
+            max_pos_step=100.0,
+            max_ori_step=100.0,
+            max_gripper_step=100.0,
+            max_pos_velocity=100.0,
+            max_ori_velocity=100.0,
+            max_gripper_velocity=100.0,
+            max_pos_acceleration=1000.0,
+            max_ori_acceleration=1000.0,
+            max_gripper_acceleration=1000.0,
+            max_pos_jerk=1_000_000.0,
+            max_ori_jerk=1_000_000.0,
+            max_gripper_jerk=1_000_000.0,
+        ),
+        cmd_dt=0.01,
+    )
+
+    flags = []
+    for index in range(5):
+        target = smoother.process(np.array([float(index), 0.0, 0.0, 0.0, 0.0, 0.0]), float(index))
+        flags.append(target.manifold_spline_active)
+
+    assert flags[:3] == [False, False, False]
+    assert flags[3:] == [True, True]
+
+
+def test_trajectory_smoother_manifold_spline_keeps_orientation_finite_near_pi() -> None:
+    smoother = TrajectorySmoother(
+        _config(
+            mpc_tracking_enabled=True,
+            mpc_delay_frames=0,
+            mpc_tracking_frequency=4.0,
+            mpc_damping_ratio=1.2,
+            manifold_spline_enabled=True,
+            max_pos_step=100.0,
+            max_ori_step=100.0,
+            max_pos_velocity=100.0,
+            max_ori_velocity=100.0,
+            max_pos_acceleration=1000.0,
+            max_ori_acceleration=1000.0,
+            max_pos_jerk=1_000_000.0,
+            max_ori_jerk=1_000_000.0,
+        ),
+        cmd_dt=0.01,
+    )
+
+    outputs = []
+    for yaw in [3.0, 3.1, -3.1, -3.0, -2.9]:
+        target = smoother.process(np.array([0.0, 0.0, 0.0, 0.0, 0.0, yaw]), 0.0)
+        outputs.append(target.pose_6d.copy())
+
+    assert np.all(np.isfinite(outputs[-1]))
+    assert abs(outputs[-1][5] - outputs[-2][5]) < 1.0
 
 
 def test_trajectory_smoother_causal_sg_reduces_position_noise() -> None:
