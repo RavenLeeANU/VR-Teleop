@@ -49,7 +49,6 @@ from hand_tracking_sdk import (  # noqa: E402
     unity_left_to_rfu_position,
     unity_left_to_rfu_rotation_matrix,
 )
-from hand_tracking_sdk.models import JointName  # noqa: E402
 from teleop_vr.postprocess import (  # noqa: E402
     DampingConfig,
     TrajectorySmoother,
@@ -319,100 +318,10 @@ def _rotmat_to_rpy(rot: np.ndarray) -> np.ndarray:
     return np.array([roll, pitch, yaw], dtype=float)
 
 
-def _safe_normalize(vector: np.ndarray, *, eps: float = 1e-8) -> np.ndarray | None:
-    norm = float(np.linalg.norm(vector))
-    if norm < eps:
-        return None
-    return vector / norm
-
-
-def _convert_position_to_basis(
-    point: tuple[float, float, float],
-    *,
-    basis: str,
-) -> np.ndarray:
-    if basis == "flu":
-        return np.asarray(unity_left_to_flu_position(*point), dtype=float)
-    return np.asarray(unity_left_to_rfu_position(*point), dtype=float)
-
-
-def _landmark_world_position(
-    local_point: tuple[float, float, float],
-    *,
-    wrist_pos: np.ndarray,
-    wrist_rot: np.ndarray,
-    basis: str,
-) -> np.ndarray:
-    # HTS landmarks are wrist-local. Convert the local vector into the same
-    # robot basis as the wrist pose, then rotate and translate it.
-    local = _convert_position_to_basis(local_point, basis=basis)
-    return wrist_rot @ local + wrist_pos
-
-
-def _midpoint_gripper_pose(
-    frame: HandFrame,
-    *,
-    basis: str,
-    fallback_pos: np.ndarray,
-    fallback_rot: np.ndarray,
-    previous_rot: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray]:
-    thumb_tip = _landmark_world_position(
-        frame.get_joint(JointName.THUMB_TIP),
-        wrist_pos=fallback_pos,
-        wrist_rot=fallback_rot,
-        basis=basis,
-    )
-    index_tip = _landmark_world_position(
-        frame.get_joint(JointName.INDEX_TIP),
-        wrist_pos=fallback_pos,
-        wrist_rot=fallback_rot,
-        basis=basis,
-    )
-    thumb_base = _landmark_world_position(
-        frame.get_joint(JointName.THUMB_METACARPAL),
-        wrist_pos=fallback_pos,
-        wrist_rot=fallback_rot,
-        basis=basis,
-    )
-    index_base = _landmark_world_position(
-        frame.get_joint(JointName.INDEX_PROXIMAL),
-        wrist_pos=fallback_pos,
-        wrist_rot=fallback_rot,
-        basis=basis,
-    )
-
-    base_midpoint = (thumb_base + index_base) * 0.5
-    x_axis = _safe_normalize(index_base - thumb_base)
-    if x_axis is None:
-        return fallback_pos, previous_rot if previous_rot is not None else fallback_rot
-
-    y_raw = base_midpoint - fallback_pos
-    y_proj = y_raw - float(np.dot(y_raw, x_axis)) * x_axis
-    y_axis = _safe_normalize(y_proj)
-    if y_axis is None:
-        return fallback_pos, previous_rot if previous_rot is not None else fallback_rot
-
-    z_axis = _safe_normalize(np.cross(x_axis, y_axis))
-    if z_axis is None:
-        return fallback_pos, previous_rot if previous_rot is not None else fallback_rot
-    y_axis = _safe_normalize(np.cross(z_axis, x_axis))
-    if y_axis is None:
-        return fallback_pos, previous_rot if previous_rot is not None else fallback_rot
-
-    rot = np.column_stack((x_axis, y_axis, z_axis))
-    if previous_rot is not None and float(np.dot(previous_rot[:, 0], rot[:, 0])) < 0.0:
-        rot[:, 0] *= -1.0
-        rot[:, 1] *= -1.0
-        rot[:, 2] = np.cross(rot[:, 0], rot[:, 1])
-    return fallback_pos, rot
-
-
 def _frame_pose(
     frame: HandFrame,
     *,
     basis: str,
-    previous_rot: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     # HTS/Unity 坐标系先转换到机器人控制使用的基坐标系。
     wrist = frame.wrist
@@ -428,16 +337,7 @@ def _frame_pose(
             unity_left_to_rfu_rotation_matrix(wrist.qx, wrist.qy, wrist.qz, wrist.qw),
             dtype=float,
         )
-    try:
-        return _midpoint_gripper_pose(
-            frame,
-            basis=basis,
-            fallback_pos=pos,
-            fallback_rot=rot,
-            previous_rot=previous_rot,
-        )
-    except (ValueError, IndexError, TypeError):
-        return pos, previous_rot if previous_rot is not None else rot
+    return pos, rot
 
 
 def _side_from_text(side: str) -> HandSide:
@@ -536,7 +436,6 @@ def start_vr_teleop(
         nonlocal active_client, ignored_other_hand_count
         reference: VrReference | None = None
         last_raw_rpy: np.ndarray | None = None
-        last_vr_rot: np.ndarray | None = None
         # 接收线程只负责读取 HTS 帧、转换到机器人目标位姿，并写入滑动窗口。
         # 真正的发送频率由 send_loop 的 cmd_dt 控制，两边解耦以吸收网络抖动。
         client = HTSClient(
@@ -568,8 +467,7 @@ def start_vr_teleop(
                     if recorder is not None
                     else None
                 )
-                vr_pos, vr_rot = _frame_pose(event, basis=basis, previous_rot=last_vr_rot)
-                last_vr_rot = vr_rot.copy()
+                vr_pos, vr_rot = _frame_pose(event, basis=basis)
                 if reference is None:
                     # 第一帧匹配手作为参考零点；之后的位置/姿态默认都相对它计算。
                     reference = VrReference(

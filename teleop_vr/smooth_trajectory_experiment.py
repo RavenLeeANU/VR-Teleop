@@ -64,6 +64,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--position-deadband", type=float, default=0.0)
     parser.add_argument("--orientation-deadband", type=float, default=0.0)
     parser.add_argument("--gripper-deadband", type=float, default=0.0)
+    parser.add_argument("--deadband-velocity-threshold", type=float, default=None)
+    parser.add_argument("--stationary-hold-enabled", action="store_true")
+    parser.add_argument("--stationary-window-size", type=int, default=8)
+    parser.add_argument("--stationary-pos-range", type=float, default=0.006)
+    parser.add_argument("--stationary-ori-range", type=float, default=0.02)
+    parser.add_argument("--stationary-command-pos-threshold", type=float, default=0.010)
+    parser.add_argument("--stationary-command-ori-threshold", type=float, default=0.03)
+    parser.add_argument("--stationary-frames", type=int, default=3)
+    parser.add_argument("--input-jump-protection-enabled", action="store_true")
+    parser.add_argument("--max-input-pos-jump", type=float, default=0.03)
+    parser.add_argument("--max-input-ori-jump", type=float, default=0.25)
+    parser.add_argument("--transition-confirm-frames", type=int, default=3)
+    parser.add_argument("--stationary-hold-cooldown-frames", type=int, default=20)
+    parser.add_argument("--mpc-tracking-enabled", action="store_true")
+    parser.add_argument("--mpc-delay-frames", type=int, default=5)
+    parser.add_argument("--mpc-tracking-frequency", type=float, default=12.0)
+    parser.add_argument("--mpc-damping-ratio", type=float, default=1.0)
+    parser.add_argument("--mpc-reference-velocity-gain", type=float, default=1.0)
     parser.add_argument("--sg-position-enabled", action="store_true")
     parser.add_argument("--sg-window-size", type=int, default=21)
     parser.add_argument("--sg-poly-order", type=int, default=2)
@@ -174,6 +192,24 @@ def _build_config(args: argparse.Namespace) -> DampingConfig:
         position_deadband=args.position_deadband,
         orientation_deadband=args.orientation_deadband,
         gripper_deadband=args.gripper_deadband,
+        deadband_velocity_threshold=args.deadband_velocity_threshold,
+        stationary_hold_enabled=args.stationary_hold_enabled,
+        stationary_window_size=args.stationary_window_size,
+        stationary_pos_range=args.stationary_pos_range,
+        stationary_ori_range=args.stationary_ori_range,
+        stationary_command_pos_threshold=args.stationary_command_pos_threshold,
+        stationary_command_ori_threshold=args.stationary_command_ori_threshold,
+        stationary_frames=args.stationary_frames,
+        input_jump_protection_enabled=args.input_jump_protection_enabled,
+        max_input_pos_jump=args.max_input_pos_jump,
+        max_input_ori_jump=args.max_input_ori_jump,
+        transition_confirm_frames=args.transition_confirm_frames,
+        stationary_hold_cooldown_frames=args.stationary_hold_cooldown_frames,
+        mpc_tracking_enabled=args.mpc_tracking_enabled,
+        mpc_delay_frames=args.mpc_delay_frames,
+        mpc_tracking_frequency=args.mpc_tracking_frequency,
+        mpc_damping_ratio=args.mpc_damping_ratio,
+        mpc_reference_velocity_gain=args.mpc_reference_velocity_gain,
         sg_position_enabled=args.sg_position_enabled,
         sg_window_size=args.sg_window_size,
         sg_poly_order=args.sg_poly_order,
@@ -204,6 +240,10 @@ def _run_smoother(
         "deadband_applied": np.zeros(len(pose), dtype=bool),
         "position_smoothed": np.zeros(len(pose), dtype=bool),
         "orientation_smoothed": np.zeros(len(pose), dtype=bool),
+        "stationary_held": np.zeros(len(pose), dtype=bool),
+        "input_spike_rejected": np.zeros(len(pose), dtype=bool),
+        "transition_active": np.zeros(len(pose), dtype=bool),
+        "mpc_tracking_active": np.zeros(len(pose), dtype=bool),
     }
 
     last_pose: np.ndarray | None = None
@@ -230,6 +270,10 @@ def _run_smoother(
         flags["deadband_applied"][index] = target.deadband_applied
         flags["position_smoothed"][index] = target.position_smoothed
         flags["orientation_smoothed"][index] = target.orientation_smoothed
+        flags["stationary_held"][index] = target.stationary_held
+        flags["input_spike_rejected"][index] = target.input_spike_rejected
+        flags["transition_active"][index] = target.transition_active
+        flags["mpc_tracking_active"][index] = target.mpc_tracking_active
         last_pose = target.pose_6d
         last_gripper = target.gripper_pos
 
@@ -300,6 +344,10 @@ def _plot_experiment(
         "deadband_applied",
         "position_smoothed",
         "orientation_smoothed",
+        "stationary_held",
+        "input_spike_rejected",
+        "transition_active",
+        "mpc_tracking_active",
         "gap_filled",
     ]
     axes[3, 0].set_title("Limiter Flags")

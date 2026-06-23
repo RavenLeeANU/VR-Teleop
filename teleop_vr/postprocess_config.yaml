@@ -1,21 +1,21 @@
 ﻿postprocess:
   enabled: true
-  alpha: 0.4
+  alpha: 0.5
 
   max_pos_step: 0.01
   max_ori_step: 0.10
   max_gripper_step: 0.005
 
-  max_pos_velocity: 0.30
-  max_ori_velocity: 1.20
+  max_pos_velocity: 0.5
+  max_ori_velocity: 2.0
   max_gripper_velocity: 0.08
 
-  max_pos_acceleration: 0.4
-  max_ori_acceleration: 1.0
+  max_pos_acceleration: 1.5
+  max_ori_acceleration: 2.6
   max_gripper_acceleration: 0.40
 
-  max_pos_jerk: 100.0
-  max_ori_jerk: 200.0
+  max_pos_jerk: 300.0
+  max_ori_jerk: 400.0
   max_gripper_jerk: 40.0
 
   pose_min: null
@@ -27,19 +27,44 @@
   max_missing_frames: 10
 
   # Hold the previous target when VR recognition changes are below these thresholds.
-  position_deadband: 0.003
+  position_deadband: 0.01
   orientation_deadband: 0.01
+  deadband_velocity_threshold: null
   # Gripper bypasses postprocess filtering; this is kept at 0 for config compatibility.
-  gripper_deadband: 0.0
+  gripper_deadband: 0.003
+
+  # Stationary hold uses multiple priors: window range + closeness to current command.
+  stationary_hold_enabled: false
+  stationary_window_size: 8
+  stationary_pos_range: 0.010
+  stationary_ori_range: 0.05
+  stationary_command_pos_threshold: 0.012
+  stationary_command_ori_threshold: 0.06
+  stationary_frames: 3
+
+  # Reject single-frame pose jumps and only accept large transitions after confirmation.
+  input_jump_protection_enabled: true
+  max_input_pos_jump: 0.08
+  max_input_ori_jump: 0.45
+  transition_confirm_frames: 2
+  stationary_hold_cooldown_frames: 8
+
+  # MPC-like delayed target tracking: follow the pose from n frames ago with damping.
+  # When enabled, deadband is applied before the MPC queue; SG / orientation EMA / stationary hold / jump protection are bypassed.
+  mpc_tracking_enabled: true
+  mpc_delay_frames: 15
+  mpc_tracking_frequency: 4.0
+  mpc_damping_ratio: 1.8
+  mpc_reference_velocity_gain: 1.0
 
   # Online causal Savitzky-Golay smoothing for position channels.
-  sg_position_enabled: true
+  sg_position_enabled: false
   sg_window_size: 21
   sg_poly_order: 2
 
   # EMA smoothing on orientation frame X/Y axes, followed by Gram-Schmidt cleanup.
   orientation_ema_enabled: true
-  orientation_ema_alpha_x: 0.15
-  orientation_ema_alpha_y: 0.15
+  orientation_ema_alpha_x: 0.45
+  orientation_ema_alpha_y: 0.45
 
 

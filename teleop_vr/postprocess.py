@@ -40,6 +40,24 @@ class DampingConfig:
     position_deadband: float = 0.0
     orientation_deadband: float = 0.0
     gripper_deadband: float = 0.0
+    deadband_velocity_threshold: float | None = None
+    stationary_hold_enabled: bool = False
+    stationary_window_size: int = 8
+    stationary_pos_range: float = 0.006
+    stationary_ori_range: float = 0.02
+    stationary_command_pos_threshold: float = 0.010
+    stationary_command_ori_threshold: float = 0.03
+    stationary_frames: int = 3
+    input_jump_protection_enabled: bool = False
+    max_input_pos_jump: float = 0.03
+    max_input_ori_jump: float = 0.25
+    transition_confirm_frames: int = 3
+    stationary_hold_cooldown_frames: int = 20
+    mpc_tracking_enabled: bool = False
+    mpc_delay_frames: int = 5
+    mpc_tracking_frequency: float = 12.0
+    mpc_damping_ratio: float = 1.0
+    mpc_reference_velocity_gain: float = 1.0
 
 
 def _to_optional_pose_array(value: object, name: str) -> np.ndarray | None:
@@ -94,6 +112,24 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         "position_deadband": 0.0,
         "orientation_deadband": 0.0,
         "gripper_deadband": 0.0,
+        "deadband_velocity_threshold": None,
+        "stationary_hold_enabled": False,
+        "stationary_window_size": 8,
+        "stationary_pos_range": 0.006,
+        "stationary_ori_range": 0.02,
+        "stationary_command_pos_threshold": 0.010,
+        "stationary_command_ori_threshold": 0.03,
+        "stationary_frames": 3,
+        "input_jump_protection_enabled": False,
+        "max_input_pos_jump": 0.03,
+        "max_input_ori_jump": 0.25,
+        "transition_confirm_frames": 3,
+        "stationary_hold_cooldown_frames": 20,
+        "mpc_tracking_enabled": False,
+        "mpc_delay_frames": 5,
+        "mpc_tracking_frequency": 12.0,
+        "mpc_damping_ratio": 1.0,
+        "mpc_reference_velocity_gain": 1.0,
     }
     if path is not None:
         data = _read_yaml(Path(path))
@@ -137,6 +173,28 @@ def load_damping_config(path: str | Path | None = None) -> DampingConfig:
         position_deadband=float(values["position_deadband"]),
         orientation_deadband=float(values["orientation_deadband"]),
         gripper_deadband=float(values["gripper_deadband"]),
+        deadband_velocity_threshold=(
+            None
+            if values["deadband_velocity_threshold"] is None
+            else float(values["deadband_velocity_threshold"])
+        ),
+        stationary_hold_enabled=bool(values["stationary_hold_enabled"]),
+        stationary_window_size=int(values["stationary_window_size"]),
+        stationary_pos_range=float(values["stationary_pos_range"]),
+        stationary_ori_range=float(values["stationary_ori_range"]),
+        stationary_command_pos_threshold=float(values["stationary_command_pos_threshold"]),
+        stationary_command_ori_threshold=float(values["stationary_command_ori_threshold"]),
+        stationary_frames=int(values["stationary_frames"]),
+        input_jump_protection_enabled=bool(values["input_jump_protection_enabled"]),
+        max_input_pos_jump=float(values["max_input_pos_jump"]),
+        max_input_ori_jump=float(values["max_input_ori_jump"]),
+        transition_confirm_frames=int(values["transition_confirm_frames"]),
+        stationary_hold_cooldown_frames=int(values["stationary_hold_cooldown_frames"]),
+        mpc_tracking_enabled=bool(values["mpc_tracking_enabled"]),
+        mpc_delay_frames=int(values["mpc_delay_frames"]),
+        mpc_tracking_frequency=float(values["mpc_tracking_frequency"]),
+        mpc_damping_ratio=float(values["mpc_damping_ratio"]),
+        mpc_reference_velocity_gain=float(values["mpc_reference_velocity_gain"]),
     )
     validate_damping_config(config)
     return config
@@ -186,10 +244,37 @@ def validate_damping_config(config: DampingConfig) -> None:
         "position_deadband": config.position_deadband,
         "orientation_deadband": config.orientation_deadband,
         "gripper_deadband": config.gripper_deadband,
+        "deadband_velocity_threshold": (
+            0.0
+            if config.deadband_velocity_threshold is None
+            else config.deadband_velocity_threshold
+        ),
+        "stationary_pos_range": config.stationary_pos_range,
+        "stationary_ori_range": config.stationary_ori_range,
+        "stationary_command_pos_threshold": config.stationary_command_pos_threshold,
+        "stationary_command_ori_threshold": config.stationary_command_ori_threshold,
+        "max_input_pos_jump": config.max_input_pos_jump,
+        "max_input_ori_jump": config.max_input_ori_jump,
     }
     invalid_deadband = [name for name, value in deadband_values.items() if value < 0.0]
     if invalid_deadband:
         raise ValueError(f"Deadband values must be >= 0: {', '.join(invalid_deadband)}")
+    if config.stationary_window_size < 1:
+        raise ValueError("stationary_window_size must be >= 1")
+    if config.stationary_frames < 1:
+        raise ValueError("stationary_frames must be >= 1")
+    if config.transition_confirm_frames < 1:
+        raise ValueError("transition_confirm_frames must be >= 1")
+    if config.stationary_hold_cooldown_frames < 0:
+        raise ValueError("stationary_hold_cooldown_frames must be >= 0")
+    if config.mpc_delay_frames < 0:
+        raise ValueError("mpc_delay_frames must be >= 0")
+    if config.mpc_tracking_frequency <= 0.0:
+        raise ValueError("mpc_tracking_frequency must be positive")
+    if config.mpc_damping_ratio <= 0.0:
+        raise ValueError("mpc_damping_ratio must be positive")
+    if config.mpc_reference_velocity_gain < 0.0:
+        raise ValueError("mpc_reference_velocity_gain must be >= 0")
 
 
 @dataclass
@@ -206,6 +291,10 @@ class SmoothedTarget:
     deadband_applied: bool = False
     position_smoothed: bool = False
     orientation_smoothed: bool = False
+    stationary_held: bool = False
+    input_spike_rejected: bool = False
+    transition_active: bool = False
+    mpc_tracking_active: bool = False
 
 
 def wrap_angle_delta(delta: np.ndarray) -> np.ndarray:
@@ -378,6 +467,18 @@ class TrajectorySmoother:
         self._last_input_gripper: float | None = None
         self._deadband_pose: np.ndarray | None = None
         self._deadband_gripper: float | None = None
+        self._deadband_last_raw_pose: np.ndarray | None = None
+        self._stationary_pose_window: deque[np.ndarray] = deque(
+            maxlen=max(1, config.stationary_window_size)
+        )
+        self._stationary_count = 0
+        self._last_valid_input_pose: np.ndarray | None = None
+        self._pending_jump_pose: np.ndarray | None = None
+        self._pending_jump_count = 0
+        self._stationary_cooldown = 0
+        self._mpc_reference_window: deque[np.ndarray] = deque(
+            maxlen=max(2, config.mpc_delay_frames + 2)
+        )
         self._missing_count = 0
 
     def reset(self) -> None:
@@ -391,6 +492,14 @@ class TrajectorySmoother:
         self._last_input_gripper = None
         self._deadband_pose = None
         self._deadband_gripper = None
+        self._deadband_last_raw_pose = None
+        self._stationary_pose_window.clear()
+        self._stationary_count = 0
+        self._last_valid_input_pose = None
+        self._pending_jump_pose = None
+        self._pending_jump_count = 0
+        self._stationary_cooldown = 0
+        self._mpc_reference_window.clear()
         self._missing_count = 0
 
     def process(self, raw_pose_6d: np.ndarray, raw_gripper_pos: float) -> SmoothedTarget:
@@ -400,10 +509,20 @@ class TrajectorySmoother:
 
         raw_gripper = float(raw_gripper_pos)
         raw_pose, raw_gripper, gap_filled = self._fill_short_gap(raw_pose, raw_gripper)
+        if self._config.enabled and self._config.mpc_tracking_enabled:
+            raw_pose, deadband_applied = self._apply_deadband(raw_pose)
+            return self._process_mpc_tracking(
+                raw_pose,
+                raw_gripper,
+                gap_filled,
+                deadband_applied,
+            )
+        raw_pose, input_spike_rejected, transition_active = self._protect_input_jump(raw_pose)
         raw_pose, deadband_applied = self._apply_deadband(raw_pose)
         raw_pose, position_smoothed = self._smooth_position(raw_pose)
         raw_pose, orientation_smoothed = self._smooth_orientation(raw_pose)
         raw_command = _compose_command(raw_pose, raw_gripper)
+        raw_command, stationary_held = self._apply_stationary_hold(raw_command)
         if not self._config.enabled:
             raw_gripper, gripper_limited = self._clip_gripper(raw_gripper)
             limited = (
@@ -411,10 +530,13 @@ class TrajectorySmoother:
                 or deadband_applied
                 or position_smoothed
                 or orientation_smoothed
+                or stationary_held
                 or gripper_limited
+                or input_spike_rejected
+                or transition_active
             )
             return SmoothedTarget(
-                raw_pose.copy(),
+                raw_command[:6].copy(),
                 raw_gripper,
                 limited,
                 command_limited=gripper_limited,
@@ -422,6 +544,9 @@ class TrajectorySmoother:
                 deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
                 orientation_smoothed=orientation_smoothed,
+                stationary_held=stationary_held,
+                input_spike_rejected=input_spike_rejected,
+                transition_active=transition_active,
             )
 
         if self._command is not None:
@@ -442,12 +567,18 @@ class TrajectorySmoother:
                 or gap_filled
                 or deadband_applied
                 or position_smoothed
-                or orientation_smoothed,
+                or orientation_smoothed
+                or stationary_held
+                or input_spike_rejected
+                or transition_active,
                 command_limited=command_limited,
                 gap_filled=gap_filled,
                 deadband_applied=deadband_applied,
                 position_smoothed=position_smoothed,
                 orientation_smoothed=orientation_smoothed,
+                stationary_held=stationary_held,
+                input_spike_rejected=input_spike_rejected,
+                transition_active=transition_active,
             )
 
         current = self._command
@@ -515,6 +646,9 @@ class TrajectorySmoother:
             or deadband_applied
             or position_smoothed
             or orientation_smoothed
+            or stationary_held
+            or input_spike_rejected
+            or transition_active
         )
         return SmoothedTarget(
             pose_6d,
@@ -529,6 +663,9 @@ class TrajectorySmoother:
             deadband_applied=deadband_applied,
             position_smoothed=position_smoothed,
             orientation_smoothed=orientation_smoothed,
+            stationary_held=stationary_held,
+            input_spike_rejected=input_spike_rejected,
+            transition_active=transition_active,
         )
 
     def _apply_command_limits(self, command: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -547,6 +684,182 @@ class TrajectorySmoother:
         if self._config.gripper_max is not None:
             clipped = min(float(self._config.gripper_max), clipped)
         return clipped, not math.isclose(clipped, gripper_pos)
+
+    def _process_mpc_tracking(
+        self,
+        raw_pose: np.ndarray,
+        raw_gripper: float,
+        gap_filled: bool,
+        deadband_applied: bool,
+    ) -> SmoothedTarget:
+        raw_command = _compose_command(raw_pose, raw_gripper)
+        raw_command, command_limited = self._apply_command_limits(raw_command)
+        self._mpc_reference_window.append(raw_command.copy())
+        reference, reference_velocity = self._mpc_delayed_reference()
+
+        if self._command is None:
+            self._command = reference.copy()
+            pose_6d, gripper_pos = _split_command(self._command)
+            return SmoothedTarget(
+                pose_6d,
+                gripper_pos,
+                command_limited or gap_filled,
+                command_limited=command_limited,
+                gap_filled=gap_filled,
+                deadband_applied=deadband_applied,
+                mpc_tracking_active=True,
+            )
+
+        reference[3:6] = self._command[3:6] + wrap_angle_delta(
+            reference[3:6] - self._command[3:6]
+        )
+        current = self._command
+        error = reference - current
+        error[3:6] = wrap_angle_delta(error[3:6])
+        velocity_error = self._config.mpc_reference_velocity_gain * reference_velocity - self._velocity
+
+        omega = 2.0 * math.pi * self._config.mpc_tracking_frequency
+        desired_acceleration = (
+            omega * omega * error
+            + 2.0 * self._config.mpc_damping_ratio * omega * velocity_error
+        )
+        acceleration_delta, jerk_limited = _limit_command_groups(
+            desired_acceleration - self._acceleration,
+            pos_limit=self._config.max_pos_jerk * self._cmd_dt,
+            ori_limit=self._config.max_ori_jerk * self._cmd_dt,
+            gripper_limit=self._config.max_gripper_jerk * self._cmd_dt,
+        )
+        desired_acceleration = self._acceleration + acceleration_delta
+        desired_acceleration, acceleration_limited = _limit_command_groups(
+            desired_acceleration,
+            pos_limit=self._config.max_pos_acceleration,
+            ori_limit=self._config.max_ori_acceleration,
+            gripper_limit=self._config.max_gripper_acceleration,
+        )
+
+        desired_velocity = self._velocity + desired_acceleration * self._cmd_dt
+        desired_velocity, velocity_limited = _limit_command_groups(
+            desired_velocity,
+            pos_limit=self._config.max_pos_velocity,
+            ori_limit=self._config.max_ori_velocity,
+            gripper_limit=self._config.max_gripper_velocity,
+        )
+
+        desired_delta = desired_velocity * self._cmd_dt
+        desired_delta, step_limited = _limit_command_groups(
+            desired_delta,
+            pos_limit=self._config.max_pos_step,
+            ori_limit=self._config.max_ori_step,
+            gripper_limit=self._config.max_gripper_step,
+        )
+
+        next_command = current + desired_delta
+        next_command, final_command_limited = self._apply_command_limits(next_command)
+        command_limited = command_limited or final_command_limited
+
+        actual_delta = next_command - current
+        actual_delta[3:6] = wrap_angle_delta(actual_delta[3:6])
+        actual_velocity = actual_delta / self._cmd_dt
+        actual_acceleration = (actual_velocity - self._velocity) / self._cmd_dt
+
+        self._command = next_command
+        self._velocity = actual_velocity
+        self._acceleration = actual_acceleration
+
+        pose_6d, gripper_pos = _split_command(next_command)
+        limited = (
+            step_limited
+            or velocity_limited
+            or acceleration_limited
+            or jerk_limited
+            or command_limited
+            or gap_filled
+            or deadband_applied
+        )
+        return SmoothedTarget(
+            pose_6d,
+            gripper_pos,
+            limited,
+            step_limited=step_limited,
+            velocity_limited=velocity_limited,
+            acceleration_limited=acceleration_limited,
+            jerk_limited=jerk_limited,
+            command_limited=command_limited,
+            gap_filled=gap_filled,
+            deadband_applied=deadband_applied,
+            mpc_tracking_active=True,
+        )
+
+    def _mpc_delayed_reference(self) -> tuple[np.ndarray, np.ndarray]:
+        window = list(self._mpc_reference_window)
+        if not window:
+            return np.zeros(7, dtype=float), np.zeros(7, dtype=float)
+
+        reference_index = max(0, len(window) - 1 - self._config.mpc_delay_frames)
+        reference = window[reference_index].copy()
+        if reference_index <= 0:
+            previous_reference = reference.copy()
+        else:
+            previous_reference = window[reference_index - 1].copy()
+
+        reference_delta = reference - previous_reference
+        reference_delta[3:6] = wrap_angle_delta(reference_delta[3:6])
+        reference_velocity = reference_delta / self._cmd_dt
+        reference_velocity, _ = _limit_command_groups(
+            reference_velocity,
+            pos_limit=self._config.max_pos_velocity,
+            ori_limit=self._config.max_ori_velocity,
+            gripper_limit=self._config.max_gripper_velocity,
+        )
+        return reference, reference_velocity
+
+    def _apply_stationary_hold(self, raw_command: np.ndarray) -> tuple[np.ndarray, bool]:
+        if not self._config.stationary_hold_enabled:
+            return raw_command, False
+        if self._stationary_cooldown > 0:
+            self._stationary_cooldown -= 1
+            self._stationary_count = 0
+            return raw_command, False
+        if not bool(np.all(np.isfinite(raw_command[:6]))):
+            self._stationary_count = 0
+            return raw_command, False
+
+        self._stationary_pose_window.append(raw_command[:6].copy())
+        if self._command is None or len(self._stationary_pose_window) < self._config.stationary_window_size:
+            return raw_command, False
+
+        pose_window = np.asarray(self._stationary_pose_window, dtype=float)
+        pos_range = float(np.max(np.ptp(pose_window[:, :3], axis=0)))
+        ori_relative = np.asarray(
+            [make_rpy_continuous(pose[3:6], pose_window[0, 3:6]) for pose in pose_window],
+            dtype=float,
+        )
+        ori_range = float(np.max(np.ptp(ori_relative, axis=0)))
+        command_pos_delta = float(np.linalg.norm(raw_command[:3] - self._command[:3]))
+        command_ori_delta = float(
+            np.linalg.norm(wrap_angle_delta(raw_command[3:6] - self._command[3:6]))
+        )
+
+        stationary = (
+            pos_range <= self._config.stationary_pos_range
+            and ori_range <= self._config.stationary_ori_range
+            and command_pos_delta <= self._config.stationary_command_pos_threshold
+            and command_ori_delta <= self._config.stationary_command_ori_threshold
+        )
+        if stationary:
+            self._stationary_count += 1
+        else:
+            self._stationary_count = 0
+            return raw_command, False
+
+        if self._stationary_count < self._config.stationary_frames:
+            return raw_command, False
+
+        held_command = raw_command.copy()
+        held_command[:6] = self._command[:6]
+        self._velocity[:] = 0.0
+        self._acceleration[:] = 0.0
+        return held_command, True
 
     def _fill_short_gap(
         self,
@@ -574,6 +887,61 @@ class TrajectorySmoother:
         filled_gripper = raw_gripper if gripper_finite else self._last_input_gripper
         return filled_pose, filled_gripper, True
 
+    def _protect_input_jump(self, raw_pose: np.ndarray) -> tuple[np.ndarray, bool, bool]:
+        if not self._config.input_jump_protection_enabled:
+            return raw_pose, False, False
+        if not bool(np.all(np.isfinite(raw_pose))):
+            return raw_pose, False, False
+
+        if self._last_valid_input_pose is None:
+            self._last_valid_input_pose = raw_pose.copy()
+            return raw_pose, False, False
+
+        pos_delta = float(np.linalg.norm(raw_pose[:3] - self._last_valid_input_pose[:3]))
+        ori_delta = float(
+            np.linalg.norm(wrap_angle_delta(raw_pose[3:6] - self._last_valid_input_pose[3:6]))
+        )
+        jumped = (
+            pos_delta > self._config.max_input_pos_jump
+            or ori_delta > self._config.max_input_ori_jump
+        )
+        if not jumped:
+            self._last_valid_input_pose = raw_pose.copy()
+            self._pending_jump_pose = None
+            self._pending_jump_count = 0
+            return raw_pose, False, False
+
+        if self._pending_jump_pose is None:
+            self._pending_jump_pose = raw_pose.copy()
+            self._pending_jump_count = 1
+        else:
+            pending_pos_delta = float(np.linalg.norm(raw_pose[:3] - self._pending_jump_pose[:3]))
+            pending_ori_delta = float(
+                np.linalg.norm(wrap_angle_delta(raw_pose[3:6] - self._pending_jump_pose[3:6]))
+            )
+            same_transition = (
+                pending_pos_delta <= self._config.max_input_pos_jump
+                and pending_ori_delta <= self._config.max_input_ori_jump
+            )
+            if same_transition:
+                self._pending_jump_count += 1
+                self._pending_jump_pose = raw_pose.copy()
+            else:
+                self._pending_jump_pose = raw_pose.copy()
+                self._pending_jump_count = 1
+
+        self._stationary_cooldown = max(
+            self._stationary_cooldown,
+            self._config.stationary_hold_cooldown_frames,
+        )
+        if self._pending_jump_count < self._config.transition_confirm_frames:
+            return self._last_valid_input_pose.copy(), True, False
+
+        self._last_valid_input_pose = raw_pose.copy()
+        self._pending_jump_pose = None
+        self._pending_jump_count = 0
+        return raw_pose, False, True
+
     def _apply_deadband(self, raw_pose: np.ndarray) -> tuple[np.ndarray, bool]:
         if (
             self._config.position_deadband <= 0.0
@@ -585,7 +953,21 @@ class TrajectorySmoother:
 
         if self._deadband_pose is None:
             self._deadband_pose = raw_pose.copy()
+            self._deadband_last_raw_pose = raw_pose.copy()
             return raw_pose, False
+
+        if (
+            self._config.deadband_velocity_threshold is not None
+            and self._deadband_last_raw_pose is not None
+        ):
+            raw_delta = raw_pose[:3] - self._deadband_last_raw_pose[:3]
+            raw_speed = float(np.linalg.norm(raw_delta)) / self._cmd_dt
+            self._deadband_last_raw_pose = raw_pose.copy()
+            if raw_speed > self._config.deadband_velocity_threshold:
+                self._deadband_pose = raw_pose.copy()
+                return raw_pose, False
+        else:
+            self._deadband_last_raw_pose = raw_pose.copy()
 
         filtered_pose = raw_pose.copy()
         applied = False
