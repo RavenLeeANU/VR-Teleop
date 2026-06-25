@@ -44,3 +44,7 @@ python -m teleop_vr.plot_teleop_vr_records --network --raw records\test02_vr_raw
 python -m teleop_vr.smooth_trajectory_experiment records\test02_converted.csv --source converted                                  
 python -m teleop_vr.plot_teleop_vr_records --robot-state records\test02_robot_state.csv --save records\test02_robot_state_check.png --no-show
 ```
+
+```
+python .\teleop_vr_send.py X5 can0 X5 can1 --record-prefix test_dual --postprocess-config teleop_vr\postprocess_config.yaml
+```

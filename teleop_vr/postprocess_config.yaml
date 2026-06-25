@@ -6,7 +6,7 @@
   max_ori_step: 0.10
   max_gripper_step: 0.005
 
-  max_pos_velocity: 0.5
+  max_pos_velocity: 0.8
   max_ori_velocity: 6.0
   max_gripper_velocity: 0.08
 
@@ -74,7 +74,7 @@
   sg_poly_order: 2
 
   # EMA smoothing on orientation frame X/Y axes, followed by Gram-Schmidt cleanup.
-  orientation_ema_enabled: true
+  orientation_ema_enabled: false
   orientation_ema_alpha_x: 0.45
   orientation_ema_alpha_y: 0.45
 

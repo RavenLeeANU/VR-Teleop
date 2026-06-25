@@ -43,6 +43,7 @@ from hand_tracking_sdk import (  # noqa: E402
     HandSide,
     StreamOutput,
     TransportMode,
+    finger_curl_angles,
     grip_value,
     unity_left_to_flu_position,
     unity_left_to_flu_rotation_matrix,
@@ -219,6 +220,10 @@ class TargetWindow:
         with self._lock:
             self._targets.append(target)
 
+    def clear(self) -> None:
+        with self._lock:
+            self._targets.clear()
+
     def size(self) -> int:
         with self._lock:
             return len(self._targets)
@@ -359,6 +364,26 @@ def _gripper_from_frame(
     grip_ctrl = grip_value(frame, grip_config)
     t = (grip_ctrl - grip_config.ctrl_min) / (grip_config.ctrl_max - grip_config.ctrl_min)
     return float(np.clip(t, 0.0, 1.0) * robot_gripper_width)
+
+
+def _is_fist_frame(frame: HandFrame, *, curl_threshold: float) -> bool:
+    """Return True when the four non-thumb fingers are curled enough."""
+
+    curl = finger_curl_angles(frame, fingers=["index", "middle", "ring", "little"])
+    if set(curl) != {"index", "middle", "ring", "little"}:
+        return False
+    return all(
+        bool(angles) and float(np.mean(angles)) >= curl_threshold
+        for angles in curl.values()
+    )
+
+
+def _fist_curl_scores(frame: HandFrame) -> dict[str, float]:
+    curl = finger_curl_angles(frame, fingers=["index", "middle", "ring", "little"])
+    return {
+        finger: float(np.mean(angles)) if angles else 0.0
+        for finger, angles in curl.items()
+    }
 
 
 def start_vr_teleop(
@@ -661,7 +686,7 @@ def start_vr_teleop(
             if interpolated_target:
                 interpolated_target_count += 1
 
-            if log_interval > 0 and send_cnt % log_interval == 0:
+            if False and log_interval > 0 and send_cnt % log_interval == 0:
                 target_age = time.monotonic() - current_target.received_at
                 print(
                     f"[vr-teleop] t={time.monotonic() - start_time:.3f}s "
@@ -721,9 +746,498 @@ def start_vr_teleop(
         sender.join(timeout=1.0)
 
 
+@dataclass
+class ArmRuntime:
+    name: str
+    side: HandSide
+    controller: Arx5CartesianController
+    robot_config: Any
+    home_pose: np.ndarray
+    target_window: TargetWindow
+    damping_config: DampingConfig
+    recorder: TeleopRecorder | None
+    grip_config: GripConfig
+    reference: VrReference | None = None
+    last_raw_rpy: np.ndarray | None = None
+    ignored_other_hand_count: int = 0
+
+
+def _make_controller(model: str, interface: str) -> tuple[Arx5CartesianController, Any]:
+    robot_config = RobotConfigFactory.get_instance().get_config(model)
+    controller_config = ControllerConfigFactory.get_instance().get_config(
+        "cartesian_controller", robot_config.joint_dof
+    )
+    if ARX_IMPORT_ERROR is None:
+        controller = Arx5CartesianController(robot_config, controller_config, interface)
+    else:
+        print(
+            "[mock-arx] arx5_interface is unavailable; running mock sender only. "
+            f"import_error={ARX_IMPORT_ERROR}"
+        )
+        controller = MockArx5CartesianController(robot_config, controller_config, interface)
+    controller.reset_to_home()
+    controller.set_log_level(LogLevel.DEBUG)
+    return controller, robot_config
+
+
+def _resolve_record_dir(record_dir: str) -> str:
+    if os.path.isabs(record_dir):
+        return record_dir
+    return os.path.join(ROOT_DIR, record_dir)
+
+
+def _make_recorder(
+    *,
+    enabled: bool,
+    output_dir: str,
+    prefix: str | None,
+) -> TeleopRecorder:
+    return TeleopRecorder(
+        RecorderConfig(
+            enabled=enabled,
+            output_dir=output_dir,
+            prefix=prefix,
+            record_robot_state=ARX_IMPORT_ERROR is None,
+        )
+    )
+
+
+def _load_damping_for_robot(path: str | None, robot_config: Any) -> DampingConfig:
+    config = load_damping_config(path)
+    if config.gripper_max is None:
+        config.gripper_max = robot_config.gripper_width
+    return config
+
+
+def _update_arm_target_from_frame(
+    arm: ArmRuntime,
+    frame: HandFrame,
+    *,
+    basis: str,
+    pos_scale: float,
+    ori_scale: float,
+    zero_first_frame: bool,
+    received_at: float,
+) -> None:
+    record_index = (
+        arm.recorder.add_frame(frame, received_at=received_at)
+        if arm.recorder is not None
+        else None
+    )
+    vr_pos, vr_rot = _frame_pose(frame, basis=basis)
+    if arm.reference is None:
+        arm.reference = VrReference(
+            pos=vr_pos.copy(),
+            rot=vr_rot.copy(),
+            robot_home_pose=arm.home_pose.copy(),
+        )
+        print(
+            f"[{arm.name}] reference captured: "
+            f"vr_pos={np.array2string(arm.reference.pos, precision=4, suppress_small=True)} "
+            f"vr_rpy={np.array2string(_rotmat_to_rpy(arm.reference.rot), precision=4, suppress_small=True)} "
+            f"home_pose={np.array2string(arm.reference.robot_home_pose, precision=4, suppress_small=True)}"
+        )
+        return
+
+    if zero_first_frame:
+        pos_delta = (vr_pos - arm.reference.pos) * pos_scale
+        rot_delta = vr_rot @ arm.reference.rot.T
+        base_pose = arm.reference.robot_home_pose
+    else:
+        pos_delta = vr_pos * pos_scale
+        rot_delta = vr_rot
+        base_pose = arm.reference.robot_home_pose
+
+    rpy_delta = _rotmat_to_rpy(rot_delta) * ori_scale
+    target_rot = _rpy_to_rotmat(base_pose[3:])
+    if ori_scale != 0.0:
+        target_rot = _rpy_to_rotmat(rpy_delta) @ target_rot
+
+    raw_pose_6d = base_pose.copy()
+    raw_pose_6d[:3] = base_pose[:3] + pos_delta
+    raw_pose_6d[3:] = make_rpy_continuous(_rotmat_to_rpy(target_rot), arm.last_raw_rpy)
+    arm.last_raw_rpy = raw_pose_6d[3:].copy()
+    raw_gripper_pos = _gripper_from_frame(
+        frame,
+        robot_gripper_width=arm.robot_config.gripper_width,
+        grip_config=arm.grip_config,
+    )
+
+    target = TeleopTarget(
+        side=frame.side,
+        sequence_id=frame.sequence_id,
+        vr_pos=vr_pos.copy(),
+        pos_delta=pos_delta.copy(),
+        rpy_delta=rpy_delta.copy(),
+        raw_pose_6d=raw_pose_6d,
+        raw_gripper_pos=raw_gripper_pos,
+        received_at=received_at,
+        record_index=record_index,
+    )
+    if arm.recorder is not None:
+        arm.recorder.add_converted_target(
+            record_index=target.record_index,
+            side=target.side.value,
+            sequence_id=target.sequence_id,
+            received_at=target.received_at,
+            vr_pos=target.vr_pos,
+            pos_delta=target.pos_delta,
+            rpy_delta=target.rpy_delta,
+            raw_pose_6d=target.raw_pose_6d,
+            raw_gripper_pos=target.raw_gripper_pos,
+        )
+    arm.target_window.append(target)
+
+
+def _dual_receive_loop(
+    *,
+    arms_by_side: dict[HandSide, ArmRuntime],
+    mocap_host: str,
+    mocap_port: int,
+    transport_mode: TransportMode,
+    basis: str,
+    pos_scale: float,
+    ori_scale: float,
+    zero_first_frame: bool,
+    fist_reset_hold_s: float,
+    fist_curl_threshold: float,
+    stop_event: threading.Event,
+    client_lock: threading.Lock,
+    active_client: list[HTSClient | None],
+) -> None:
+    client = HTSClient(
+        HTSClientConfig(
+            transport_mode=transport_mode,
+            host=mocap_host,
+            port=mocap_port,
+            output=StreamOutput.FRAMES,
+            error_policy=ErrorPolicy.TOLERANT,
+        )
+    )
+    with client_lock:
+        active_client[0] = client
+
+    fist_by_side = {HandSide.LEFT: False, HandSide.RIGHT: False}
+    both_fist_since: float | None = None
+    fist_reset_armed = True
+    both_fist_logged = False
+
+    try:
+        for event in client.iter_events():
+            if stop_event.is_set():
+                break
+            if not isinstance(event, HandFrame):
+                continue
+            arm = arms_by_side.get(event.side)
+            if arm is None:
+                for runtime in arms_by_side.values():
+                    runtime.ignored_other_hand_count += 1
+                continue
+            if fist_reset_hold_s > 0.0:
+                is_fist = _is_fist_frame(
+                    event,
+                    curl_threshold=fist_curl_threshold,
+                )
+                fist_by_side[event.side] = is_fist
+                curl_scores = _fist_curl_scores(event)
+                now = time.monotonic()
+                both_fist = fist_by_side[HandSide.LEFT] and fist_by_side[HandSide.RIGHT]
+                print(
+                    "[dual-vr-teleop] fist_frame "
+                    f"side={event.side.value} seq={event.sequence_id} "
+                    f"is_fist={is_fist} both_fist={both_fist} "
+                    f"curl={curl_scores} threshold={fist_curl_threshold:.3f}"
+                )
+                if both_fist:
+                    if both_fist_since is None:
+                        both_fist_since = now
+                        both_fist_logged = True
+                        print(
+                            "[dual-vr-teleop] both hands are fists; "
+                            f"holding for {fist_reset_hold_s:.2f}s will reset VR reference."
+                        )
+                    elif fist_reset_armed and now - both_fist_since >= fist_reset_hold_s:
+                        for runtime in arms_by_side.values():
+                            runtime.reference = None
+                            runtime.last_raw_rpy = None
+                            runtime.target_window.clear()
+                        fist_reset_armed = False
+                        print(
+                            "[dual-vr-teleop] both hands held as fists for "
+                            f"{fist_reset_hold_s:.2f}s; VR references will be recaptured."
+                        )
+                        continue
+                else:
+                    if both_fist_logged:
+                        print("[dual-vr-teleop] fist reset gesture released.")
+                    both_fist_since = None
+                    fist_reset_armed = True
+                    both_fist_logged = False
+            _update_arm_target_from_frame(
+                arm,
+                event,
+                basis=basis,
+                pos_scale=pos_scale,
+                ori_scale=ori_scale,
+                zero_first_frame=zero_first_frame,
+                received_at=time.monotonic(),
+            )
+    except Exception as exc:
+        if not stop_event.is_set():
+            stop_event.set()
+            print(f"[dual-vr-teleop] receive thread stopped by error: {exc!r}")
+    finally:
+        client.close()
+        with client_lock:
+            if active_client[0] is client:
+                active_client[0] = None
+
+
+def _dual_send_loop(
+    arm: ArmRuntime,
+    *,
+    cmd_dt: float,
+    interp_delay: float,
+    preview_time: float,
+    update_traj: bool,
+    log_interval: int,
+    stop_event: threading.Event,
+    start_time: float,
+) -> None:
+    eef_cmd = EEFState()
+    smoother = TrajectorySmoother(arm.damping_config, cmd_dt=cmd_dt)
+    current_target: TeleopTarget | None = None
+    last_sent_rpy: np.ndarray | None = None
+    last_valid_sent_pose_6d: np.ndarray | None = None
+    last_valid_sent_gripper_pos: float | None = None
+    avg_error = np.zeros(6)
+    avg_cnt = 0
+    send_cnt = 0
+    latest_seq = -1
+    repeated_target_count = 0
+    reused_target_count = 0
+    interpolated_target_count = 0
+    next_send_time = time.monotonic() + cmd_dt
+
+    while not stop_event.is_set():
+        now = time.monotonic()
+        sleep_time = next_send_time - now
+        if sleep_time > 0.0:
+            time.sleep(min(sleep_time, cmd_dt))
+            now = time.monotonic()
+        if now >= next_send_time:
+            missed_periods = int((now - next_send_time) // cmd_dt)
+            next_send_time += (missed_periods + 1) * cmd_dt
+
+        sampled_target, interpolated_target = arm.target_window.sample(now - interp_delay)
+        reused_current_target = sampled_target is None and current_target is not None
+        if sampled_target is not None:
+            current_target = sampled_target
+        if current_target is None:
+            continue
+
+        raw_target_pose_6d = current_target.raw_pose_6d.copy()
+        raw_target_gripper_pos = current_target.raw_gripper_pos
+        smoothed_target = smoother.process(raw_target_pose_6d, raw_target_gripper_pos)
+        target_pose_6d = smoothed_target.pose_6d
+        target_gripper_pos = smoothed_target.gripper_pos
+        target_pose_6d[3:] = make_rpy_continuous(target_pose_6d[3:], last_sent_rpy)
+        try:
+            target_pose_6d, target_gripper_pos, nonfinite_replaced = (
+                replace_nonfinite_command_values(
+                    target_pose_6d,
+                    target_gripper_pos,
+                    last_valid_sent_pose_6d,
+                    last_valid_sent_gripper_pos,
+                )
+            )
+        except ValueError as exc:
+            print(f"[{arm.name}] skipped non-finite command before first valid send: {exc}")
+            continue
+
+        if nonfinite_replaced:
+            print(f"[{arm.name}] replaced non-finite command values with previous sent command")
+        last_sent_rpy = target_pose_6d[3:].copy()
+
+        current_timestamp = arm.controller.get_timestamp()
+        eef_cmd.pose_6d()[:] = target_pose_6d
+        eef_cmd.gripper_pos = target_gripper_pos
+        eef_cmd.timestamp = current_timestamp + preview_time
+        sent_at = time.monotonic()
+        if arm.recorder is not None:
+            arm.recorder.mark_sent(
+                record_index=current_target.record_index,
+                sent_at=sent_at,
+                sent_pose_6d=target_pose_6d,
+                sent_gripper_pos=target_gripper_pos,
+            )
+
+        if update_traj:
+            arm.controller.set_eef_traj([eef_cmd])
+        else:
+            arm.controller.set_eef_cmd(eef_cmd)
+        last_valid_sent_pose_6d = target_pose_6d.copy()
+        last_valid_sent_gripper_pos = float(target_gripper_pos)
+
+        output_eef_cmd = arm.controller.get_eef_cmd()
+        eef_state = arm.controller.get_eef_state()
+        error = output_eef_cmd.pose_6d() - eef_state.pose_6d()
+        if arm.recorder is not None:
+            arm.recorder.add_robot_state(
+                sent_at=sent_at,
+                state_pose_6d=eef_state.pose_6d(),
+                state_gripper_pos=eef_state.gripper_pos,
+                cmd_pose_6d=output_eef_cmd.pose_6d(),
+                cmd_gripper_pos=output_eef_cmd.gripper_pos,
+            )
+        avg_error += error
+        avg_cnt += 1
+
+        send_cnt += 1
+        if current_target.sequence_id == latest_seq:
+            repeated_target_count += 1
+        else:
+            latest_seq = current_target.sequence_id
+            repeated_target_count = 0
+        if reused_current_target:
+            reused_target_count += 1
+        if interpolated_target:
+            interpolated_target_count += 1
+
+        if False and log_interval > 0 and send_cnt % log_interval == 0:
+            target_age = time.monotonic() - current_target.received_at
+            print(
+                f"[{arm.name}] t={time.monotonic() - start_time:.3f}s "
+                f"send={send_cnt} side={current_target.side.value} "
+                f"seq={current_target.sequence_id} target_age={target_age:.4f}s "
+                f"repeat={repeated_target_count} window_size={arm.target_window.size()} "
+                f"reused={reused_target_count} interpolated={interpolated_target_count} "
+                f"ignored_other_hand={arm.ignored_other_hand_count} "
+                f"pose={np.array2string(target_pose_6d, precision=4, suppress_small=True)} "
+                f"gripper={target_gripper_pos:.4f}/{arm.robot_config.gripper_width:.4f} "
+                f"avg_error={np.array2string(avg_error / max(1, avg_cnt), precision=4, suppress_small=True)}"
+            )
+
+
+def _save_recorder(name: str, recorder: TeleopRecorder | None) -> None:
+    if recorder is None:
+        return
+    saved_paths = recorder.save()
+    if saved_paths is None:
+        return
+    raw_path, converted_path, robot_state_path = saved_paths
+    print(f"[{name}] Saved VR raw records to {raw_path}")
+    print(f"[{name}] Saved converted records to {converted_path}")
+    if robot_state_path is not None:
+        print(f"[{name}] Saved robot state records to {robot_state_path}")
+
+
+def start_dual_vr_teleop(
+    left_arm: ArmRuntime,
+    right_arm: ArmRuntime,
+    *,
+    mocap_host: str,
+    mocap_port: int,
+    transport_mode: TransportMode,
+    basis: str,
+    pos_scale: float,
+    ori_scale: float,
+    cmd_dt: float,
+    interp_delay: float,
+    preview_time: float,
+    update_traj: bool,
+    log_interval: int,
+    zero_first_frame: bool,
+    fist_reset_hold_s: float,
+    fist_curl_threshold: float,
+) -> None:
+    stop_event = threading.Event()
+    client_lock = threading.Lock()
+    active_client: list[HTSClient | None] = [None]
+    start_time = time.monotonic()
+    arms_by_side = {HandSide.LEFT: left_arm, HandSide.RIGHT: right_arm}
+
+    print(
+        "Dual VR teleop ready. "
+        f"left={left_arm.name} right={right_arm.name} "
+        f"transport={transport_mode.value} {mocap_host}:{mocap_port} basis={basis} "
+        f"zero_first_frame={zero_first_frame}"
+    )
+    for arm in (left_arm, right_arm):
+        if arm.recorder is not None and arm.recorder.enabled:
+            print(f"[{arm.name}] Recording enabled. CSV files will be saved after keyboard interrupt.")
+
+    receiver = threading.Thread(
+        target=_dual_receive_loop,
+        kwargs={
+            "arms_by_side": arms_by_side,
+            "mocap_host": mocap_host,
+            "mocap_port": mocap_port,
+            "transport_mode": transport_mode,
+            "basis": basis,
+            "pos_scale": pos_scale,
+            "ori_scale": ori_scale,
+            "zero_first_frame": zero_first_frame,
+            "fist_reset_hold_s": fist_reset_hold_s,
+            "fist_curl_threshold": fist_curl_threshold,
+            "stop_event": stop_event,
+            "client_lock": client_lock,
+            "active_client": active_client,
+        },
+        name="dual-vr-receiver",
+        daemon=True,
+    )
+    left_sender = threading.Thread(
+        target=_dual_send_loop,
+        kwargs={
+            "arm": left_arm,
+            "cmd_dt": cmd_dt,
+            "interp_delay": interp_delay,
+            "preview_time": preview_time,
+            "update_traj": update_traj,
+            "log_interval": log_interval,
+            "stop_event": stop_event,
+            "start_time": start_time,
+        },
+        name="left-robot-sender",
+        daemon=True,
+    )
+    right_sender = threading.Thread(
+        target=_dual_send_loop,
+        kwargs={
+            "arm": right_arm,
+            "cmd_dt": cmd_dt,
+            "interp_delay": interp_delay,
+            "preview_time": preview_time,
+            "update_traj": update_traj,
+            "log_interval": log_interval,
+            "stop_event": stop_event,
+            "start_time": start_time,
+        },
+        name="right-robot-sender",
+        daemon=True,
+    )
+
+    receiver.start()
+    left_sender.start()
+    right_sender.start()
+
+    try:
+        while receiver.is_alive() and left_sender.is_alive() and right_sender.is_alive():
+            time.sleep(0.1)
+    finally:
+        stop_event.set()
+        with client_lock:
+            client = active_client[0]
+        if client is not None:
+            client.close()
+        receiver.join(timeout=1.0)
+        left_sender.join(timeout=1.0)
+        right_sender.join(timeout=1.0)
+
+
 @click.command()
-@click.argument("model")
-@click.argument("interface")
+@click.argument("robot_args", nargs=-1)
 @click.option("--hand", type=click.Choice(["left", "right"]), default="right", show_default=True)
 @click.option("--mocap-host", "--mocap-tcp-host", default="0.0.0.0", show_default=True)
 @click.option("--mocap-port", "--mocap-tcp-port", type=int, default=5555, show_default=True)
@@ -750,8 +1264,24 @@ def start_vr_teleop(
 )
 @click.option("--record-dir", default="./records", show_default=True)
 @click.option("--record-prefix", default=None)
+@click.option("--left-record-prefix", default=None, help="CSV prefix for the left arm in dual-arm mode.")
+@click.option("--right-record-prefix", default=None, help="CSV prefix for the right arm in dual-arm mode.")
 @click.option("--grip-open-dist", type=float, default=0.08, show_default=True)
 @click.option("--grip-close-dist", type=float, default=0.02, show_default=True)
+@click.option(
+    "--fist-reset-hold-s",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Dual-arm mode: recapture VR references after both hands hold fists for this many seconds; use 0 to disable.",
+)
+@click.option(
+    "--fist-curl-threshold",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Dual-arm mode: average finger curl angle in radians used to classify one hand as a fist.",
+)
 @click.option(
     "--postprocess-config",
     type=click.Path(exists=True, dir_okay=False, path_type=str),
@@ -765,8 +1295,7 @@ def start_vr_teleop(
     help="Use the first VR frame as zero pose and remove its position/orientation bias.",
 )
 def main(
-    model: str,
-    interface: str,
+    robot_args: tuple[str, ...],
     hand: str,
     mocap_host: str,
     mocap_port: int,
@@ -783,22 +1312,114 @@ def main(
     record: bool,
     record_dir: str,
     record_prefix: str | None,
+    left_record_prefix: str | None,
+    right_record_prefix: str | None,
     grip_open_dist: float,
     grip_close_dist: float,
+    fist_reset_hold_s: float,
+    fist_curl_threshold: float,
     postprocess_config: str | None,
     zero_first_frame: bool,
 ) -> None:
+    if len(robot_args) not in (2, 4):
+        raise click.UsageError(
+            "Expected MODEL INTERFACE for single-arm mode, or "
+            "LEFT_MODEL LEFT_INTERFACE RIGHT_MODEL RIGHT_INTERFACE for dual-arm mode."
+        )
     if cmd_dt <= 0.0:
         raise click.BadParameter("--cmd-dt must be positive.")
     if interp_window_size < 2:
         raise click.BadParameter("--interp-window-size must be at least 2.")
     if interp_delay < 0.0:
         raise click.BadParameter("--interp-delay must be >= 0.")
+    if fist_reset_hold_s < 0.0:
+        raise click.BadParameter("--fist-reset-hold-s must be >= 0.")
+    if fist_curl_threshold < 0.0:
+        raise click.BadParameter("--fist-curl-threshold must be >= 0.")
     try:
         damping_config = load_damping_config(postprocess_config)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--postprocess-config") from exc
 
+    np.set_printoptions(precision=4, suppress=True)
+    resolved_record_dir = _resolve_record_dir(record_dir)
+
+    if len(robot_args) == 4:
+        left_model, left_interface, right_model, right_interface = robot_args
+        if left_interface == right_interface:
+            raise click.BadParameter(
+                "left_interface and right_interface must be different.",
+                param_hint="robot_args",
+            )
+
+        left_controller, left_robot_config = _make_controller(left_model, left_interface)
+        right_controller, right_robot_config = _make_controller(right_model, right_interface)
+        left_prefix = left_record_prefix or (
+            f"{record_prefix}_left" if record_prefix is not None else "dual_left"
+        )
+        right_prefix = right_record_prefix or (
+            f"{record_prefix}_right" if record_prefix is not None else "dual_right"
+        )
+        grip_config = GripConfig(open_dist=grip_open_dist, close_dist=grip_close_dist)
+        left_arm = ArmRuntime(
+            name="left",
+            side=HandSide.LEFT,
+            controller=left_controller,
+            robot_config=left_robot_config,
+            home_pose=np.asarray(left_controller.get_home_pose(), dtype=float).copy(),
+            target_window=TargetWindow(interp_window_size),
+            damping_config=_load_damping_for_robot(postprocess_config, left_robot_config),
+            recorder=_make_recorder(
+                enabled=record,
+                output_dir=resolved_record_dir,
+                prefix=left_prefix,
+            ),
+            grip_config=grip_config,
+        )
+        right_arm = ArmRuntime(
+            name="right",
+            side=HandSide.RIGHT,
+            controller=right_controller,
+            robot_config=right_robot_config,
+            home_pose=np.asarray(right_controller.get_home_pose(), dtype=float).copy(),
+            target_window=TargetWindow(interp_window_size),
+            damping_config=_load_damping_for_robot(postprocess_config, right_robot_config),
+            recorder=_make_recorder(
+                enabled=record,
+                output_dir=resolved_record_dir,
+                prefix=right_prefix,
+            ),
+            grip_config=grip_config,
+        )
+        try:
+            start_dual_vr_teleop(
+                left_arm,
+                right_arm,
+                mocap_host=mocap_host,
+                mocap_port=mocap_port,
+                transport_mode=TransportMode(transport),
+                basis=basis,
+                pos_scale=pos_scale,
+                ori_scale=ori_scale,
+                cmd_dt=cmd_dt,
+                interp_delay=interp_delay,
+                preview_time=preview_time,
+                update_traj=not single_cmd,
+                log_interval=log_interval,
+                zero_first_frame=zero_first_frame,
+                fist_reset_hold_s=fist_reset_hold_s,
+                fist_curl_threshold=fist_curl_threshold,
+            )
+        except KeyboardInterrupt:
+            print("Dual VR teleop is terminated. Resetting both arms to home.")
+        finally:
+            for arm in (left_arm, right_arm):
+                arm.controller.reset_to_home()
+                arm.controller.set_to_damping()
+                _save_recorder(arm.name, arm.recorder)
+        return
+
+    model, interface = robot_args
     robot_config = RobotConfigFactory.get_instance().get_config(model)
     if damping_config.gripper_max is None:
         damping_config.gripper_max = robot_config.gripper_width
@@ -815,23 +1436,13 @@ def main(
         controller = MockArx5CartesianController(robot_config, controller_config, interface)
     controller.reset_to_home()
     controller.set_log_level(LogLevel.DEBUG)
-    np.set_printoptions(precision=4, suppress=True)
 
     gain = Gain(robot_config.joint_dof)
     _ = gain
-    # 相对记录路径固定解析到项目根目录，避免从其他 cwd 启动时写到项目外。
-    resolved_record_dir = (
-        record_dir
-        if os.path.isabs(record_dir)
-        else os.path.join(ROOT_DIR, record_dir)
-    )
-    recorder = TeleopRecorder(
-        RecorderConfig(
-            enabled=record,
-            output_dir=resolved_record_dir,
-            prefix=record_prefix,
-            record_robot_state=ARX_IMPORT_ERROR is None,
-        )
+    recorder = _make_recorder(
+        enabled=record,
+        output_dir=resolved_record_dir,
+        prefix=record_prefix,
     )
 
     try:
