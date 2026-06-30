@@ -24,7 +24,6 @@ try:
         Arx5CartesianController,
         ControllerConfigFactory,
         EEFState,
-        Gain,
         LogLevel,
         RobotConfigFactory,
     )
@@ -34,30 +33,34 @@ except ModuleNotFoundError as exc:
     Arx5CartesianController = Any
     ARX_IMPORT_ERROR = exc
 
-from hand_tracking_sdk import (  # noqa: E402
+from hand_tracking_sdk.client import (  # noqa: E402
     ErrorPolicy,
-    GripConfig,
     HTSClient,
     HTSClientConfig,
-    HandFrame,
-    HandSide,
     StreamOutput,
     TransportMode,
-    finger_curl_angles,
-    grip_value,
+)
+from hand_tracking_sdk.convert import (  # noqa: E402
     unity_left_to_flu_position,
     unity_left_to_flu_rotation_matrix,
     unity_left_to_rfu_position,
     unity_left_to_rfu_rotation_matrix,
 )
-from teleop_vr.postprocess import (  # noqa: E402
-    DampingConfig,
+from hand_tracking_sdk.frame import HandFrame  # noqa: E402
+from hand_tracking_sdk.models import HandSide  # noqa: E402
+from hand_tracking_sdk.teleop import (  # noqa: E402
+    finger_curl_angles,
+    GripConfig,
+    grip_value,
+)
+from quest_hand.runtime_postprocess import (  # noqa: E402
+    RuntimePostprocessConfig,
     TrajectorySmoother,
-    load_damping_config,
+    load_runtime_postprocess_config,
     make_rpy_continuous,
     replace_nonfinite_command_values,
 )
-from teleop_vr.recorder import RecorderConfig, TeleopRecorder  # noqa: E402
+from quest_hand.recorder import RecorderConfig, TeleopRecorder  # noqa: E402
 
 
 @dataclass
@@ -108,11 +111,6 @@ class MockEEFState:
 
 class MockLogLevel:
     DEBUG = "DEBUG"
-
-
-class MockGain:
-    def __init__(self, joint_dof: int) -> None:
-        self.joint_dof = joint_dof
 
 
 class MockArx5CartesianController:
@@ -183,7 +181,6 @@ if ARX_IMPORT_ERROR is not None:
     RobotConfigFactory = MockRobotConfigFactory
     ControllerConfigFactory = MockControllerConfigFactory
     EEFState = MockEEFState
-    Gain = MockGain
     LogLevel = MockLogLevel
 
 
@@ -403,7 +400,7 @@ def start_vr_teleop(
     update_traj: bool,
     log_interval: int,
     grip_config: GripConfig,
-    damping_config: DampingConfig,
+    damping_config: RuntimePostprocessConfig,
     zero_first_frame: bool,
     recorder: TeleopRecorder | None,
 ) -> None:
@@ -754,7 +751,7 @@ class ArmRuntime:
     robot_config: Any
     home_pose: np.ndarray
     target_window: TargetWindow
-    damping_config: DampingConfig
+    damping_config: RuntimePostprocessConfig
     recorder: TeleopRecorder | None
     grip_config: GripConfig
     reference: VrReference | None = None
@@ -802,8 +799,8 @@ def _make_recorder(
     )
 
 
-def _load_damping_for_robot(path: str | None, robot_config: Any) -> DampingConfig:
-    config = load_damping_config(path)
+def _load_damping_for_robot(path: str | None, robot_config: Any) -> RuntimePostprocessConfig:
+    config = load_runtime_postprocess_config(path)
     if config.gripper_max is None:
         config.gripper_max = robot_config.gripper_width
     return config
@@ -1337,7 +1334,7 @@ def main(
     if fist_curl_threshold < 0.0:
         raise click.BadParameter("--fist-curl-threshold must be >= 0.")
     try:
-        damping_config = load_damping_config(postprocess_config)
+        damping_config = load_runtime_postprocess_config(postprocess_config)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--postprocess-config") from exc
 
@@ -1437,8 +1434,6 @@ def main(
     controller.reset_to_home()
     controller.set_log_level(LogLevel.DEBUG)
 
-    gain = Gain(robot_config.joint_dof)
-    _ = gain
     recorder = _make_recorder(
         enabled=record,
         output_dir=resolved_record_dir,

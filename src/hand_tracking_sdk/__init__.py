@@ -77,18 +77,27 @@ from hand_tracking_sdk.transport import (
     UDPLineReceiver,
     UDPReceiverConfig,
 )
-from hand_tracking_sdk.video import (
-    SignalingMessage,
-    SignalingProtocolError,
-    VideoService,
-    VideoServiceConfig,
-    parse_signaling_message,
-)
-from hand_tracking_sdk.visualization import (
-    RerunVisualizer,
-    RerunVisualizerConfig,
-    VisualizationFrame,
-)
+_LAZY_EXPORTS = {
+    "SignalingMessage": ("hand_tracking_sdk.video", "SignalingMessage"),
+    "SignalingProtocolError": ("hand_tracking_sdk.video", "SignalingProtocolError"),
+    "VideoService": ("hand_tracking_sdk.video", "VideoService"),
+    "VideoServiceConfig": ("hand_tracking_sdk.video", "VideoServiceConfig"),
+    "parse_signaling_message": ("hand_tracking_sdk.video", "parse_signaling_message"),
+    "RerunVisualizer": ("hand_tracking_sdk.visualization", "RerunVisualizer"),
+    "RerunVisualizerConfig": ("hand_tracking_sdk.visualization", "RerunVisualizerConfig"),
+    "VisualizationFrame": ("hand_tracking_sdk.visualization", "VisualizationFrame"),
+}
+
+
+def __getattr__(name: str) -> object:
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = _LAZY_EXPORTS[name]
+    from importlib import import_module
+
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "ClientCallbackError",

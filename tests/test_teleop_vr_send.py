@@ -6,12 +6,12 @@ import numpy as np
 
 from hand_tracking_sdk.frame import HandFrame
 from hand_tracking_sdk.models import HandLandmarks, HandSide, WristPose
-from teleop_vr.postprocess import (
+from quest_hand.postprocess import (
     DampingConfig,
     TrajectorySmoother,
     replace_nonfinite_command_values,
 )
-from teleop_vr.recorder import RecorderConfig, TeleopRecorder
+from quest_hand.recorder import RecorderConfig, TeleopRecorder
 from teleop_vr_send import TargetWindow, TeleopTarget, _frame_pose
 
 

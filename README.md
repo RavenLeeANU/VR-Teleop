@@ -25,26 +25,26 @@ python .\examples\video\x5_ik_test.py --arm right --directions +x,+y,-y
 
 网络延迟分析
 ```
-python -m teleop_vr.plot_teleop_vr_records --network --raw records\test03_vr_raw.csv
+python -m quest_hand.plot_teleop_vr_records --network --raw records\test03_vr_raw.csv
 ```
 
 绘制轨迹，对比 raw_target 和 sent_target：
 ```
-python -m teleop_vr.plot_teleop_vr_records records\test03_converted.csv --save records\test03_traj.png --no-show
+python -m quest_hand.plot_teleop_vr_records records\test03_converted.csv --save records\test03_traj.png --no-show
 ```
 
 重新计算平滑
 ```
-python -m teleop_vr.smooth_trajectory_experiment records\test03_converted.csv --source converted --postprocess-config teleop_vr\postprocess_config.yaml --save records\test03_smooth_exp.png --no-show
+python -m quest_hand.smooth_trajectory_experiment records\test03_converted.csv --source converted --postprocess-config quest_hand\postprocess_config.yaml --save records\test03_smooth_exp.png --no-show
 ```
 
 
 ```
-python -m teleop_vr.plot_teleop_vr_records --network --raw records\test02_vr_raw.csv                                              
-python -m teleop_vr.smooth_trajectory_experiment records\test02_converted.csv --source converted                                  
-python -m teleop_vr.plot_teleop_vr_records --robot-state records\test02_robot_state.csv --save records\test02_robot_state_check.png --no-show
+python -m quest_hand.plot_teleop_vr_records --network --raw records\test02_vr_raw.csv                                              
+python -m quest_hand.smooth_trajectory_experiment records\test02_converted.csv --source converted                                  
+python -m quest_hand.plot_teleop_vr_records --robot-state records\test02_robot_state.csv --save records\test02_robot_state_check.png --no-show
 ```
 
 ```
-python .\teleop_vr_send.py X5 can0 X5 can1 --record-prefix test_dual --postprocess-config teleop_vr\postprocess_config.yaml
+python .\teleop_vr_send.py X5 can0 X5 can1 --record-prefix test_dual --postprocess-config quest_hand\postprocess_config.yaml
 ```

@@ -1,0 +1,47 @@
+postprocess:
+  enabled: true
+
+  # Basic follow mode gain; ignored when mpc_tracking_enabled is true.
+  alpha: 0.5
+
+  # Per-cycle safety caps.
+  max_pos_step: 0.01
+  max_ori_step: 0.10
+  max_gripper_step: 0.005
+
+  # Runtime velocity / acceleration / jerk limits.
+  max_pos_velocity: 0.8
+  max_ori_velocity: 6.0
+  max_gripper_velocity: 0.08
+  max_pos_acceleration: 1.5
+  max_ori_acceleration: 20.0
+  max_gripper_acceleration: 0.40
+  max_pos_jerk: 300.0
+  max_ori_jerk: 2000.0
+  max_gripper_jerk: 40.0
+
+  # Optional software limits.
+  pose_min: null
+  pose_max: null
+  gripper_min: 0.0
+  gripper_max: null
+  gripper_closed_threshold: 0.02
+  gripper_open_threshold: 0.06
+
+  # Short NaN/Inf gaps are held at the last valid command.
+  max_missing_frames: 10
+
+  # Ignore tiny VR pose changes before the runtime tracker.
+  position_deadband: 0.01
+  orientation_deadband: 0.05
+  gripper_deadband: 0.003
+
+  # Delayed damped reference tracker used by teleop_vr_send.py.
+  mpc_tracking_enabled: true
+  mpc_delay_frames: 10
+  mpc_tracking_frequency: 4.0
+  mpc_damping_ratio: 1.8
+  mpc_reference_velocity_gain: 1.0
+  mpc_orientation_tracking_frequency: 2.0
+  mpc_orientation_damping_ratio: 1.8
+  mpc_orientation_reference_velocity_gain: 1.0
